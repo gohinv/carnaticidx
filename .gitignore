@@ -1,0 +1,4 @@
+ingest/.env
+ingest/credentials.json
+ingest/credentials-desktop.json
+ingest/*.txt
