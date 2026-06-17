@@ -596,6 +596,7 @@ REVIEW_HTML = r"""<!DOCTYPE html>
 <script>
 // ---- State ----
 let drafts = [];
+let draftsTotal = 0;
 let currentIdx = -1;
 let ragas = [], composers = [], talams = [];
 let selectedPieceId = null;
@@ -613,13 +614,46 @@ async function init() {
 }
 
 async function loadDrafts() {
-  const res = await fetch('/review/drafts?per_page=200');
+  const res = await fetch('/review/drafts?per_page=200&page=1');
   const data = await res.json();
   drafts = data.items;
-  document.getElementById('stats').textContent =
-    `${data.total} drafts remaining`;
+  draftsTotal = data.total;
+  currentIdx = -1;
+  updateDraftStats();
   renderList();
-  if (drafts.length > 0 && currentIdx === -1) selectDraft(0);
+  if (drafts.length > 0) selectDraft(0);
+}
+
+function updateDraftStats() {
+  const el = document.getElementById('stats');
+  if (!el) return;
+  if (draftsTotal === 0) {
+    el.textContent = 'No drafts remaining';
+  } else if (drafts.length < draftsTotal) {
+    el.textContent = `${draftsTotal} drafts remaining (showing ${drafts.length})`;
+  } else {
+    el.textContent = `${draftsTotal} drafts remaining`;
+  }
+}
+
+async function refillDraftQueue() {
+  const res = await fetch('/review/drafts?per_page=200&page=1');
+  const data = await res.json();
+  draftsTotal = data.total;
+  if (data.items.length === 0) {
+    drafts = [];
+    currentIdx = -1;
+    updateDraftStats();
+    renderList();
+    document.getElementById('detail').innerHTML =
+      '<div class="empty"><span>✅</span>All drafts resolved!</div>';
+    return;
+  }
+  drafts = data.items;
+  currentIdx = 0;
+  updateDraftStats();
+  renderList();
+  await selectDraft(0);
 }
 
 // ---- Tab switching ----
@@ -855,13 +889,13 @@ async function statusAction(action) {
 
 async function removeCurrent() {
   drafts.splice(currentIdx, 1);
-  document.getElementById('stats').textContent = `${drafts.length} drafts remaining`;
+  draftsTotal = Math.max(0, draftsTotal - 1);
   if (drafts.length === 0) {
-    renderList();
-    document.getElementById('detail').innerHTML = '<div class="empty"><span>✅</span>All drafts resolved!</div>';
+    await refillDraftQueue();
     return;
   }
   currentIdx = Math.min(currentIdx, drafts.length - 1);
+  updateDraftStats();
   renderList();
   await selectDraft(currentIdx);
 }

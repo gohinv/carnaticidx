@@ -1373,7 +1373,7 @@ def ingest(
     with app.app_context():
         stats = {
             "concerts": 0, "setlist_items": 0, "drafts": 0,
-            "artists": 0, "aliases_added": 0,
+            "drafts_skipped": 0, "artists": 0, "aliases_added": 0,
         }
         staged: list = []
 
@@ -1488,6 +1488,33 @@ def ingest(
                             f" si={'new' if si_created else 'dup'})"
                         )
                 else:
+                    existing_si = db.session.query(SetlistItem).filter_by(
+                        concert_id=concert.id,
+                        sequence_number=seq,
+                    ).first()
+                    if existing_si:
+                        stats["drafts_skipped"] += 1
+                        if verbose:
+                            print(
+                                f"  [SKIP]    seq={seq} already in setlist "
+                                f"(piece_id={existing_si.piece_id})"
+                            )
+                        continue
+
+                    existing_draft = db.session.query(IngestDraft).filter_by(
+                        youtube_id=h.youtube_id,
+                        sequence_number=seq,
+                        status="needs_review",
+                    ).first()
+                    if existing_draft:
+                        stats["drafts_skipped"] += 1
+                        if verbose:
+                            print(
+                                f"  [SKIP]    seq={seq} needs_review draft "
+                                f"id={existing_draft.id} already exists"
+                            )
+                        continue
+
                     draft = IngestDraft(
                         youtube_id=h.youtube_id,
                         sequence_number=seq,
@@ -1529,6 +1556,7 @@ def ingest(
         print(f"  Aliases added:  {stats['aliases_added']}")
         print(f"  Setlist items:  {stats['setlist_items']}")
         print(f"  Drafts:         {stats['drafts']}")
+        print(f"  Drafts skipped: {stats['drafts_skipped']}")
         print(f"  Total lines:    {stats['setlist_items'] + stats['drafts']}")
 
 

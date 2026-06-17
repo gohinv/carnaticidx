@@ -191,19 +191,24 @@ def view_concerts():
 
 @app.route('/concerts/setlist/<int:concert_id>', methods=['GET'])
 def view_setlist(concert_id: int):
-    setlist_piece_ids = db.session.scalars(db.select(SetlistItem.piece_id).where(SetlistItem.concert_id == concert_id).order_by(SetlistItem.sequence_number)).all()
-    pieces = db.session.scalars(db.select(Piece).where(Piece.id.in_(setlist_piece_ids))).all()
-    pieces_out = [
+    rows = db.session.execute(
+        db.select(SetlistItem, Piece)
+        .outerjoin(Piece, SetlistItem.piece_id == Piece.id)
+        .where(SetlistItem.concert_id == concert_id)
+        .order_by(SetlistItem.sequence_number)
+    ).all()
+    return jsonify([
         {
-            "id": p.id,
-            "name": p.name,
-            "raga": p.raga.name if p.raga else None,
-            "composer": p.composer.name if p.composer else None,
-            "talam": p.talam.name if p.talam else None,
+            "sequence_number": si.sequence_number,
+            "timestamp_seconds": si.timestamp_seconds,
+            "id": p.id if p else None,
+            "name": p.name if p else None,
+            "raga": p.raga.name if p and p.raga else None,
+            "composer": p.composer.name if p and p.composer else None,
+            "talam": p.talam.name if p and p.talam else None,
         }
-        for p in pieces
-    ]
-    return jsonify(pieces_out)
+        for si, p in rows
+    ])
 
 
 
