@@ -1,4 +1,4 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, render_template
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from dotenv import load_dotenv
@@ -15,19 +15,21 @@ migrate = Migrate(app, db)
 # Entity Tables
 
 class Concert(db.Model):
+    __tablename__ = 'concerts'
     id = db.Column(db.Integer, primary_key=True)
     youtube_id = db.Column(db.String(255), unique=True, nullable=False)
-    title = db.Column(db.String(255))
-    year = db.Column(db.Integer)
+    title = db.Column(db.String(255), index=True)
+    year = db.Column(db.Integer, index=True)
     venue = db.Column(db.String(255))
 
-    setlist_items = db.relationship('SetlistItem', back_populates='concert')
+    setlist_items = db.relationship('SetlistItem', back_populates='concert', order_by='SetlistItem.sequence_number')
     concert_artists = db.relationship('ConcertArtist', back_populates='concert')
 
     def __repr__(self):
         return f"<Concert {self.title}>"
 
 class Artist(db.Model):
+    __tablename__ = 'artists'
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(255))
 
@@ -36,23 +38,8 @@ class Artist(db.Model):
     def __repr__(self):
         return f"<Artist {self.name}>"
 
-class Piece(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(255), unique=True)
-    kind = db.Column(db.String(255)) # krithi, padam, varnam
-    raga_id = db.Column(db.Integer, db.ForeignKey('raga.id'), nullable=False)
-    composer_id = db.Column(db.Integer, db.ForeignKey('composer.id'), nullable=False)
-    talam_id = db.Column(db.Integer, db.ForeignKey('talam.id'), nullable=False)
-
-    raga = db.relationship('Raga', back_populates='pieces')
-    composer = db.relationship('Composer', back_populates='pieces')
-    talam = db.relationship('Talam', back_populates='pieces')
-    setlist_items = db.relationship('SetlistItem', back_populates='piece')
-
-    def __repr__(self):
-        return f"<Piece {self.name}>"
-
 class Composer(db.Model):
+    __tablename__ = 'composers'
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(255), unique=True)
 
@@ -62,6 +49,7 @@ class Composer(db.Model):
         return f"<Composer {self.name}>"
 
 class Raga(db.Model):
+    __tablename__ = 'ragas'
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(255), unique=True)
 
@@ -71,6 +59,7 @@ class Raga(db.Model):
         return f"<Raga {self.name}>"
 
 class Talam(db.Model):
+    __tablename__ = 'talams'
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(255), unique=True)
 
@@ -79,37 +68,153 @@ class Talam(db.Model):
     def __repr__(self):
         return f"<Talam {self.name}>"
 
+class Piece(db.Model):
+    __tablename__ = 'pieces'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(255))
+    kind = db.Column(db.String(255)) # krithi, padam, varnam
+    raga_id = db.Column(db.Integer, db.ForeignKey('ragas.id'), nullable=True, index=True)
+    composer_id = db.Column(db.Integer, db.ForeignKey('composers.id'), nullable=True, index=True)
+    talam_id = db.Column(db.Integer, db.ForeignKey('talams.id'), nullable=True, index=True)
+
+    raga = db.relationship('Raga', back_populates='pieces')
+    composer = db.relationship('Composer', back_populates='pieces')
+    talam = db.relationship('Talam', back_populates='pieces')
+    setlist_items = db.relationship('SetlistItem', back_populates='piece')
+
+    __table_args__ = (
+        db.UniqueConstraint('name', 'kind', 'raga_id', 'composer_id', 'talam_id', name='uix_piece_name_kind_raga_composer_talam'),
+    )
+
+    def __repr__(self):
+        return f"<Piece {self.name}>"
+
 # Junction tables
 
 class ConcertArtist(db.Model):
-    concert_id = db.Column(db.Integer, db.ForeignKey('concert.id'), primary_key=True)
-    artist_id = db.Column(db.Integer, db.ForeignKey('artist.id'))
+    __tablename__ = 'concert_artists'
+    id = db.Column(db.Integer, primary_key=True)
+    concert_id = db.Column(db.Integer, db.ForeignKey('concerts.id', ondelete='CASCADE'), nullable=False, index=True)
+    artist_id = db.Column(db.Integer, db.ForeignKey('artists.id'), nullable=False, index=True)
     instrument = db.Column(db.String(255))
-    role = db.Column(db.String(255)) # "accompanist" or "main artist"
+    role = db.Column(db.String(255))  # "main artist" or "accompanist"
 
     concert = db.relationship('Concert', back_populates='concert_artists')
     artist = db.relationship('Artist', back_populates='concert_artists')
 
+    __table_args__ = (
+        db.Index('ix_concertartist_artist_role', 'artist_id', 'role'),
+        db.UniqueConstraint('concert_id', 'artist_id', 'instrument', 'role', name='uix_concertartist_artist_instrument_role'),
+    )
+
     def __repr__(self):
-        return f"<ConcertArtist {self.artist_id}>"
+        return f"<ConcertArtist concert={self.concert_id} artist={self.artist_id} role={self.role!r}>"
 
 class SetlistItem(db.Model):
+    __tablename__ = 'setlist_items'
     id = db.Column(db.Integer, primary_key=True)
-    concert_id = db.Column(db.Integer, db.ForeignKey('concert.id'), nullable=False)
-    piece_id = db.Column(db.Integer, db.ForeignKey('piece.id'), nullable=False)
-    timestamp_seconds = db.Column(db.Integer)
-    sequence_number = db.Column(db.Integer)
+    concert_id = db.Column(db.Integer, db.ForeignKey('concerts.id', ondelete='CASCADE'), nullable=False, index=True)
+    piece_id = db.Column(db.Integer, db.ForeignKey('pieces.id', ondelete='SET NULL'), nullable=True, index=True)
+    timestamp_seconds = db.Column(db.Integer, nullable=False)
+    sequence_number = db.Column(db.Integer, nullable=False)
 
     concert = db.relationship('Concert', back_populates='setlist_items')
     piece = db.relationship('Piece', back_populates='setlist_items')
 
+    __table_args__ = (
+        db.UniqueConstraint('concert_id', 'sequence_number', name='unique_concert_sequence'),
+    )
+
     def __repr__(self):
         return f"<SetlistItem {self.piece_id}>"
+
+class PieceAlias(db.Model):
+    __tablename__ = 'piece_aliases'
+    id = db.Column(db.Integer, primary_key=True)
+    piece_id = db.Column(db.Integer, db.ForeignKey('pieces.id', ondelete='CASCADE'), nullable=False, index=True)
+    alias = db.Column(db.String(255), nullable=False)
+
+    piece = db.relationship('Piece', backref=db.backref('aliases', cascade='all, delete-orphan'))
+
+    __table_args__ = (
+        db.Index(
+            'idx_piece_aliases_trgm',
+            'alias',
+            postgresql_using='gin',
+            postgresql_ops={
+                'alias': 'gin_trgm_ops'
+            }
+        ),
+    )
+
+
+class IngestDraft(db.Model):
+    __tablename__ = 'ingest_drafts'
+    id = db.Column(db.Integer, primary_key=True)
+    youtube_id = db.Column(db.String(255), nullable=False, index=True)
+    sequence_number = db.Column(db.Integer)
+    timestamp_seconds = db.Column(db.Integer)
+    raw_line = db.Column(db.Text, nullable=False)
+    parsed_piece = db.Column(db.String(255))
+    parsed_raga = db.Column(db.String(255))
+    parsed_talam = db.Column(db.String(255))
+    parsed_composer = db.Column(db.String(255))
+    parsed_kind = db.Column(db.String(50))
+    confidence = db.Column(db.Float, default=0.0)
+    status = db.Column(db.String(50), default='needs_review', index=True)
+    resolved_setlist_item_id = db.Column(
+        db.Integer, db.ForeignKey('setlist_items.id', ondelete='SET NULL'),
+        nullable=True,
+    )
+
+    def __repr__(self):
+        return f"<IngestDraft {self.id} [{self.status}] {self.parsed_piece}>"
 
 
 @app.route('/')
 def index():
-    return jsonify({'message': 'Hello, World!'})
+    return render_template('index.html')
+
+
+@app.route('/concerts/view', methods=['GET'])
+def view_concerts():
+    concerts = db.session.execute(db.select(Concert).limit(3)).scalars().all()
+    return jsonify([
+        {
+            "id": c.id,
+            "title": c.title,
+            "year": c.year,
+            "venue": c.venue,
+        }
+        for c in concerts
+    ])
+
+@app.route('/concerts/setlist/<int:concert_id>', methods=['GET'])
+def view_setlist(concert_id: int):
+    setlist_piece_ids = db.session.scalars(db.select(SetlistItem.piece_id).where(SetlistItem.concert_id == concert_id).order_by(SetlistItem.sequence_number)).all()
+    pieces = db.session.scalars(db.select(Piece).where(Piece.id.in_(setlist_piece_ids))).all()
+    pieces_out = [
+        {
+            "id": p.id,
+            "name": p.name,
+            "raga": p.raga.name if p.raga else None,
+            "composer": p.composer.name if p.composer else None,
+            "talam": p.talam.name if p.talam else None,
+        }
+        for p in pieces
+    ]
+    return jsonify(pieces_out)
+
+
+
+# @app.route('/pieces/search')
+# def pieces_search(name: str):
+    
+# Register review blueprint
+from review import review_bp  # noqa: E402
+app.register_blueprint(review_bp)
+
+
 
 if __name__ == '__main__':
     app.run(debug=True)
