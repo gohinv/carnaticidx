@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Carnatic Index</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+
+<header>
+  <h1>Carnatic Concerts Index</h1>
+  <p>Search renditions across concerts</p>
+</header>
+
+<main>
+  <div class="search-wrapper">
+    <label class="search-label" for="search-input">Piece</label>
+    <input
+      id="search-input"
+      type="text"
+      autocomplete="off"
+      spellcheck="false"
+      placeholder="Begin typing a piece name…"
+    />
+    <ul id="autocomplete-list" role="listbox"></ul>
+  </div>
+
+  <div id="results-section" style="display:none">
+    <div id="results-header">
+      <div id="results-heading">
+        <h2 id="results-title"></h2>
+        <p id="results-subtitle"></p>
+      </div>
+      <span id="results-count"></span>
+    </div>
+    <div id="loading" style="display:none">
+      <span class="spinner"></span>Loading renditions…
+    </div>
+    <ul class="rendition-list" id="rendition-list"></ul>
+    <p id="empty-state" style="display:none">No renditions found for this piece.</p>
+  </div>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

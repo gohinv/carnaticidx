@@ -1,11 +1,18 @@
+from math import pi
 from flask import Flask, jsonify, render_template
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from dotenv import load_dotenv
+from sqlalchemy.orm import joinedload
 
 load_dotenv()
 
-app = Flask(__name__)
+app = Flask(
+    __name__,
+    template_folder='../client',
+    static_folder='../client',
+    static_url_path='',
+)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://gohitha@localhost/carnaticidx'
 
@@ -171,24 +178,134 @@ class IngestDraft(db.Model):
         return f"<IngestDraft {self.id} [{self.status}] {self.parsed_piece}>"
 
 
-@app.route('/')
-def index():
-    return render_template('index.html')
+# CLIENT ENDPOINTS
 
-
-@app.route('/concerts/view', methods=['GET'])
-def view_concerts():
-    concerts = db.session.execute(db.select(Concert).limit(3)).scalars().all()
+# Autocomplete Piece Names
+@app.route('/pieces/autocomplete/<string:prefix>', methods=['GET'])
+def autocomplete_pieces(prefix: str):
+    rows = db.session.scalars(
+        db.select(Piece)
+        .options(
+            joinedload(Piece.raga),
+            joinedload(Piece.talam),
+            joinedload(Piece.composer),
+        )
+        .where(Piece.name.ilike(f"{prefix}%"))
+        .order_by(Piece.name)
+        .limit(10)
+    ).unique().all()
     return jsonify([
+        {
+            "id": p.id,
+            "name": p.name,
+            "raga": p.raga.name if p.raga else None,
+            "talam": p.talam.name if p.talam else None,
+            "composer": p.composer.name if p.composer else None,
+        }
+        for p in rows
+    ])
+
+# Autocomplete Artist Names
+@app.route('/artists/autocomplete/<string:prefix>', methods=['GET'])
+def autocomplete_artists(prefix: str):
+    rows = db.session.scalars(
+        db.select(Artist)
+        .where(Artist.name.ilike(f"{prefix}%"))
+        .order_by(Artist.name)
+        .limit(10)
+    ).all()
+    return jsonify([
+        {
+            "id": a.id,
+            "name": a.name,
+        }
+        for a in rows
+    ])
+
+# Autocomplete Raga Names
+@app.route('/ragas/autocomplete/<string:prefix>', methods=['GET'])
+def autocomplete_ragas(prefix: str):
+    rows = db.session.scalars(
+        db.select(Raga)
+        .where(Raga.name.ilike(f"{prefix}%"))
+        .order_by(Raga.name)
+        .limit(10)
+    ).all()
+    return jsonify([
+        {
+            "id": r.id,
+            "name": r.name,
+        }
+        for r in rows
+    ])
+
+# Autocomplete Composer Names
+@app.route('/composers/autocomplete/<string:prefix>', methods=['GET'])
+def autocomplete_composers(prefix: str):
+    rows = db.session.scalars(
+        db.select(Composer)
+        .where(Composer.name.ilike(f"{prefix}%"))
+        .order_by(Composer.name)
+        .limit(10)
+    ).all()
+    return jsonify([
+        {
+            "id": c.id,
+            "name": c.name,
+        }
+        for c in rows
+    ])
+
+# Find renditions of a piece
+@app.route('/pieces/get-setlist/<string:piece_name>', methods=['GET'])
+def get_setlist(piece_name: str):
+    rows = db.session.execute(
+        db.select(SetlistItem, Piece, Concert)
+        .join(Piece, SetlistItem.piece_id == Piece.id)
+        .join(Concert, SetlistItem.concert_id == Concert.id)
+        .where(Piece.name == piece_name)
+    ).all()
+    return jsonify([
+        {
+            "piece_id": p.id,
+            "piece_name": p.name,
+            "raga": p.raga.name if p.raga else None,
+            "talam": p.talam.name if p.talam else None,
+            "composer": p.composer.name if p.composer else None,
+            "concert_id": c.id,
+            "concert_title": c.title,
+            "concert_year": c.year,
+            "concert_venue": c.venue,
+            "track_url": f"https://www.youtube.com/watch?v={c.youtube_id}&t={si.timestamp_seconds}",
+            "timestamp_seconds": si.timestamp_seconds,
+            "sequence_number": si.sequence_number,
+        }
+        for si, p, c in rows
+    ])
+
+# Find concerts by main artist name
+@app.route('/concerts/find/<string:main_artist>', methods=['GET'])
+def find_concerts(main_artist: str):
+   rows = db.session.execute(
+        db.select(Concert)
+        .join(Concert.concert_artists)
+        .join(ConcertArtist.artist)
+        .where(ConcertArtist.role == 'main artist')
+        .where(Artist.name == main_artist)
+        .order_by(Concert.year)
+   ).scalars().all()
+   return jsonify([
         {
             "id": c.id,
             "title": c.title,
             "year": c.year,
             "venue": c.venue,
+            "url": f"https://www.youtube.com/watch?v={c.youtube_id}",
         }
-        for c in concerts
+        for c in rows
     ])
 
+# View setlist for a concert
 @app.route('/concerts/setlist/<int:concert_id>', methods=['GET'])
 def view_setlist(concert_id: int):
     rows = db.session.execute(
@@ -210,10 +327,48 @@ def view_setlist(concert_id: int):
         for si, p in rows
     ])
 
+# Get the artists for a concert
+@app.route('/concerts/get-artists/<int:concert_id>', methods=['GET'])
+def get_concert_artists(concert_id: int):
+    rows = db.session.execute(
+        db.select(ConcertArtist, Artist)
+        .join(Artist, ConcertArtist.artist_id == Artist.id)
+        .where(ConcertArtist.concert_id == concert_id)
+        .order_by(
+            db.case((ConcertArtist.role == 'main artist', 0), else_=1),
+            Artist.name,
+        )
+    ).all()
+    return jsonify([
+        {
+            "id": a.id,
+            "name": a.name,
+            "instrument": ca.instrument,
+            "role": ca.role,
+        }
+        for ca, a in rows
+    ])
+
+@app.route('/')
+def index():
+    return render_template('index.html')
 
 
-# @app.route('/pieces/search')
-# def pieces_search(name: str):
+# TEST ENDPOINTS
+
+@app.route('/concerts/view', methods=['GET'])
+def view_concerts():
+    concerts = db.session.execute(db.select(Concert).limit(3)).scalars().all()
+    return jsonify([
+        {
+            "id": c.id,
+            "title": c.title,
+            "year": c.year,
+            "venue": c.venue,
+        }
+        for c in concerts
+    ])
+
     
 # Register review blueprint
 from review import review_bp  # noqa: E402
