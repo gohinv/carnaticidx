@@ -9,37 +9,100 @@
 <body>
 
 <header>
-  <h1>Carnatic Concerts Index</h1>
+  <h1><a href="#/" id="home-link">Carnatic Concerts Index</a></h1>
   <p>Search renditions across concerts</p>
 </header>
 
 <main>
-  <div class="search-wrapper">
-    <label class="search-label" for="search-input">Piece</label>
-    <input
-      id="search-input"
-      type="text"
-      autocomplete="off"
-      spellcheck="false"
-      placeholder="Begin typing a piece name…"
-    />
-    <ul id="autocomplete-list" role="listbox"></ul>
-  </div>
+  <!-- SEARCH VIEW -->
+  <section id="search-view">
+    <div class="tabs" role="tablist">
+      <button class="tab active" role="tab" data-tab="pieces">Pieces</button>
+      <button class="tab" role="tab" data-tab="concerts">Concerts</button>
+    </div>
 
-  <div id="results-section" style="display:none">
-    <div id="results-header">
-      <div id="results-heading">
-        <h2 id="results-title"></h2>
-        <p id="results-subtitle"></p>
+    <!-- PIECES TAB -->
+    <div class="tab-panel active" data-panel="pieces">
+      <div class="search-wrapper">
+        <label class="search-label" for="piece-input">Piece</label>
+        <input
+          id="piece-input"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Begin typing a piece name…"
+        />
+        <ul id="piece-ac-list" class="ac-list" role="listbox"></ul>
       </div>
-      <span id="results-count"></span>
+
+      <div id="piece-results-section" style="display:none">
+        <div class="results-header">
+          <div class="results-heading">
+            <h2 id="piece-results-title"></h2>
+            <p id="piece-results-subtitle"></p>
+          </div>
+          <span id="piece-results-count" class="results-count"></span>
+        </div>
+        <div id="piece-loading" class="loading" style="display:none">
+          <span class="spinner"></span>Loading renditions…
+        </div>
+        <ul class="rendition-list" id="rendition-list"></ul>
+        <p id="piece-empty-state" class="empty-state" style="display:none">No renditions found for this piece.</p>
+      </div>
     </div>
-    <div id="loading" style="display:none">
-      <span class="spinner"></span>Loading renditions…
+
+    <!-- CONCERTS TAB -->
+    <div class="tab-panel" data-panel="concerts">
+      <div class="search-wrapper">
+        <label class="search-label" for="artist-input">Artist</label>
+        <input
+          id="artist-input"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Begin typing an artist name…"
+        />
+        <ul id="artist-ac-list" class="ac-list" role="listbox"></ul>
+      </div>
+
+      <div id="concert-results-section" style="display:none">
+        <div class="results-header">
+          <div class="results-heading">
+            <h2 id="concert-results-title"></h2>
+            <p id="concert-results-subtitle"></p>
+          </div>
+          <span id="concert-results-count" class="results-count"></span>
+        </div>
+        <div id="concert-loading" class="loading" style="display:none">
+          <span class="spinner"></span>Loading concerts…
+        </div>
+        <ul class="concert-grid" id="concert-grid"></ul>
+        <p id="concert-empty-state" class="empty-state" style="display:none">No concerts found for this artist.</p>
+      </div>
     </div>
-    <ul class="rendition-list" id="rendition-list"></ul>
-    <p id="empty-state" style="display:none">No renditions found for this piece.</p>
-  </div>
+  </section>
+
+  <!-- CONCERT DETAIL VIEW -->
+  <section id="concert-view" style="display:none">
+    <a href="#/" class="back-link">← Back to search</a>
+    <div id="concert-detail-loading" class="loading" style="display:none">
+      <span class="spinner"></span>Loading concert…
+    </div>
+    <div id="concert-detail" style="display:none">
+      <div class="concert-hero">
+        <div class="concert-hero-meta">
+          <span class="concert-hero-eyebrow">Concert</span>
+          <h2 id="concert-detail-title"></h2>
+          <p id="concert-detail-artists"></p>
+          <p id="concert-detail-sub" class="concert-hero-sub"></p>
+          <a id="concert-detail-link" class="concert-hero-link" target="_blank" rel="noopener noreferrer">Open on YouTube ↗</a>
+        </div>
+      </div>
+
+      <ol class="setlist" id="setlist"></ol>
+      <p id="setlist-empty" class="empty-state" style="display:none">No setlist available.</p>
+    </div>
+  </section>
 </main>
 
 <script src="/app.js"></script>

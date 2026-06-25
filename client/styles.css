@@ -38,6 +38,43 @@ header h1 {
   text-transform: uppercase;
 }
 
+header h1 a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 1.5rem;
+}
+
+.tab {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 0.85rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 0.7rem 1rem;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.tab:hover { color: var(--text); }
+
+.tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
 header p {
   margin-top: 0.4rem;
   font-size: 0.82rem;
@@ -66,7 +103,7 @@ main {
   margin-bottom: 0.6rem;
 }
 
-#search-input {
+.search-wrapper input[type="text"] {
   width: 100%;
   padding: 0.75rem 1rem;
   background: var(--surface);
@@ -79,15 +116,10 @@ main {
   transition: border-color 0.15s;
 }
 
-#search-input:focus {
-  border-color: var(--accent-dim);
-}
+.search-wrapper input[type="text"]:focus { border-color: var(--accent-dim); }
+.search-wrapper input[type="text"]::placeholder { color: var(--muted); }
 
-#search-input::placeholder {
-  color: var(--muted);
-}
-
-#autocomplete-list {
+.ac-list {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
@@ -99,9 +131,10 @@ main {
   max-height: 260px;
   overflow-y: auto;
   display: none;
+  list-style: none;
 }
 
-#autocomplete-list.open { display: block; }
+.ac-list.open { display: block; }
 
 .ac-item {
   padding: 0.65rem 1rem;
@@ -131,11 +164,11 @@ main {
   background: #252520;
 }
 
-#results-section {
+[id$="-results-section"] {
   margin-top: 2.5rem;
 }
 
-#results-header {
+.results-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -145,28 +178,24 @@ main {
   padding-bottom: 0.75rem;
 }
 
-#results-heading {
-  min-width: 0;
-}
+.results-heading { min-width: 0; }
 
-#results-title {
+.results-heading h2 {
   font-size: 1.15rem;
   font-weight: normal;
   color: var(--accent);
 }
 
-#results-subtitle {
+.results-heading p {
   margin-top: 0.35rem;
   font-size: 0.82rem;
   color: var(--muted);
   letter-spacing: 0.03em;
 }
 
-#results-subtitle:empty {
-  display: none;
-}
+.results-heading p:empty { display: none; }
 
-#results-count {
+.results-count {
   font-size: 0.78rem;
   color: var(--muted);
   letter-spacing: 0.05em;
@@ -207,7 +236,12 @@ main {
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--text);
+  display: block;
+  text-decoration: none;
+  transition: color 0.15s;
 }
+
+.rendition-concert:hover { color: var(--accent); }
 
 .rendition-details {
   margin-top: 0.25rem;
@@ -235,7 +269,7 @@ main {
   flex-shrink: 0;
 }
 
-#empty-state {
+.empty-state {
   text-align: center;
   padding: 3rem 0;
   color: var(--muted);
@@ -243,13 +277,195 @@ main {
   font-style: italic;
 }
 
-#loading {
+.loading {
   text-align: center;
   padding: 2.5rem 0;
   color: var(--muted);
   font-size: 0.85rem;
   letter-spacing: 0.08em;
 }
+
+/* Concert grid */
+.concert-grid {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.concert-tile {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.85rem 1.1rem;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.concert-tile:hover {
+  border-color: var(--accent-dim);
+  background: #1f1f1f;
+}
+
+.concert-tile-info { min-width: 0; flex: 1; }
+
+.concert-tile-title {
+  font-size: 0.95rem;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.concert-tile-sub {
+  margin-top: 0.25rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.concert-tile-arrow {
+  color: var(--muted);
+  font-size: 0.9rem;
+  flex-shrink: 0;
+}
+
+/* Concert detail page */
+.back-link {
+  display: inline-block;
+  margin-bottom: 1.5rem;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.85rem;
+  letter-spacing: 0.05em;
+  transition: color 0.15s;
+}
+
+.back-link:hover { color: var(--accent); }
+
+.concert-hero {
+  margin-bottom: 2.5rem;
+  padding-bottom: 1.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.concert-hero-meta { min-width: 0; }
+
+.concert-hero-eyebrow {
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.concert-hero-meta h2 {
+  font-size: 2rem;
+  font-weight: normal;
+  color: var(--text);
+  margin: 0.4rem 0 0.6rem;
+  line-height: 1.15;
+}
+
+#concert-detail-artists {
+  font-size: 1rem;
+  color: var(--accent);
+  margin-bottom: 0.4rem;
+}
+
+#concert-detail-artists:empty { display: none; }
+
+.concert-hero-sub {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.concert-hero-sub:empty { display: none; }
+
+.concert-hero-link {
+  display: inline-block;
+  margin-top: 0.9rem;
+  color: var(--link);
+  text-decoration: none;
+  font-size: 0.85rem;
+  transition: color 0.15s;
+}
+
+.concert-hero-link:hover { color: var(--link-hover); }
+
+/* Setlist */
+.setlist {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.setlist-header {
+  display: grid;
+  grid-template-columns: 36px 1fr auto;
+  gap: 1rem;
+  padding: 0 0.75rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.setlist-header span:last-child { text-align: right; }
+
+.setlist-row {
+  display: grid;
+  grid-template-columns: 36px 1fr auto;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.75rem 0.75rem;
+  border-radius: var(--radius);
+  border-bottom: 1px solid var(--border);
+  transition: background 0.15s;
+}
+
+.setlist-row:hover { background: #1a1a1a; }
+.setlist-row:last-child { border-bottom: none; }
+
+.setlist-num {
+  color: var(--muted);
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.setlist-main { min-width: 0; }
+
+.setlist-name {
+  font-size: 0.98rem;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.setlist-name:hover { color: var(--accent); }
+
+.setlist-meta {
+  margin-top: 0.25rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.setlist-meta:empty { display: none; }
+
+.setlist-time {
+  font-size: 0.82rem;
+  color: var(--muted);
+  white-space: nowrap;
+  text-align: right;
+}
+
 
 .spinner {
   display: inline-block;

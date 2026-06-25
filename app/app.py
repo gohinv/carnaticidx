@@ -305,6 +305,20 @@ def find_concerts(main_artist: str):
         for c in rows
     ])
 
+# Get concert metadata by id
+@app.route('/concerts/get-metadata/<int:concert_id>', methods=['GET'])
+def get_concert_metadata(concert_id: int):
+    row = db.session.get(Concert, concert_id)
+    if row is None:
+        return jsonify({"error": "Concert not found"}), 404
+    return jsonify({
+        "id": row.id,
+        "title": row.title,
+        "year": row.year,
+        "venue": row.venue,
+        "url": f"https://www.youtube.com/watch?v={row.youtube_id}",
+    })
+
 # View setlist for a concert
 @app.route('/concerts/setlist/<int:concert_id>', methods=['GET'])
 def view_setlist(concert_id: int):
