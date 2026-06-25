@@ -351,15 +351,17 @@ const setlistEl = document.getElementById('setlist');
 const setlistEmpty = document.getElementById('setlist-empty');
 
 async function getConcertMeta(concertId) {
-  if (concertMetaCache[concertId]) return concertMetaCache[concertId];
+  const cached = concertMetaCache[concertId];
+  if (cached?.duration_seconds != null) return cached;
+
   try {
     const res = await fetch(`${API}/concerts/get-metadata/${concertId}`);
-    if (!res.ok) return {};
+    if (!res.ok) return cached || {};
     const meta = await res.json();
     cacheConcertMeta(meta);
-    return meta;
+    return { ...cached, ...meta };
   } catch {
-    return {};
+    return cached || {};
   }
 }
 
@@ -420,7 +422,9 @@ async function showConcert(concertId) {
     setlistEl.appendChild(header);
 
     setlist.forEach((item, idx) => {
-      const nextTs = setlist[idx + 1]?.timestamp_seconds ?? null;
+      const nextTs = setlist[idx + 1]?.timestamp_seconds
+        ?? concertMeta.duration_seconds
+        ?? null;
       setlistEl.appendChild(buildSetlistRow(item, idx + 1, concertMeta, nextTs));
     });
   } catch {

@@ -28,6 +28,7 @@ class Concert(db.Model):
     title = db.Column(db.String(255), index=True)
     year = db.Column(db.Integer, index=True)
     venue = db.Column(db.String(255))
+    duration_seconds = db.Column(db.Integer, nullable=True)
 
     setlist_items = db.relationship('SetlistItem', back_populates='concert', order_by='SetlistItem.sequence_number')
     concert_artists = db.relationship('ConcertArtist', back_populates='concert')
@@ -317,6 +318,7 @@ def get_concert_metadata(concert_id: int):
         "year": row.year,
         "venue": row.venue,
         "url": f"https://www.youtube.com/watch?v={row.youtube_id}",
+        "duration_seconds": row.duration_seconds,
     })
 
 # View setlist for a concert
