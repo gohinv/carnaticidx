@@ -266,8 +266,32 @@ def get_setlist(piece_name: str):
         .join(Concert, SetlistItem.concert_id == Concert.id)
         .where(Piece.name == piece_name)
     ).all()
-    return jsonify([
-        {
+
+    concert_ids = {c.id for _, _, c in rows}
+    next_ts_by_item = {}
+    if concert_ids:
+        concert_items = db.session.scalars(
+            db.select(SetlistItem)
+            .where(SetlistItem.concert_id.in_(concert_ids))
+            .order_by(SetlistItem.concert_id, SetlistItem.sequence_number)
+        ).all()
+        by_concert = {}
+        for item in concert_items:
+            by_concert.setdefault(item.concert_id, []).append(item)
+        for items in by_concert.values():
+            for i, item in enumerate(items):
+                if i + 1 < len(items):
+                    next_ts_by_item[item.id] = items[i + 1].timestamp_seconds
+
+    results = []
+    for si, p, c in rows:
+        next_ts = next_ts_by_item.get(si.id, c.duration_seconds)
+        duration = None
+        if next_ts is not None and si.timestamp_seconds is not None:
+            delta = next_ts - si.timestamp_seconds
+            if delta > 0:
+                duration = delta
+        results.append({
             "piece_id": p.id,
             "piece_name": p.name,
             "raga": p.raga.name if p.raga else None,
@@ -279,10 +303,10 @@ def get_setlist(piece_name: str):
             "concert_venue": c.venue,
             "track_url": f"https://www.youtube.com/watch?v={c.youtube_id}&t={si.timestamp_seconds}",
             "timestamp_seconds": si.timestamp_seconds,
+            "duration_seconds": duration,
             "sequence_number": si.sequence_number,
-        }
-        for si, p, c in rows
-    ])
+        })
+    return jsonify(results)
 
 # Find concerts by main artist name
 @app.route('/concerts/find/<string:main_artist>', methods=['GET'])

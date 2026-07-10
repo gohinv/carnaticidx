@@ -106,14 +106,6 @@ function formatPieceMeta({ raga, talam, composer }) {
   return [raga, talam, composer].filter(Boolean).join(' · ');
 }
 
-function formatTimestamp(secs) {
-  const h = Math.floor(secs / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  const s = secs % 60;
-  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-  return `${m}:${String(s).padStart(2, '0')}`;
-}
-
 function formatArtists(artists) {
   return artists.map(a => a.name).join(' · ');
 }
@@ -242,7 +234,7 @@ function buildRenditionCard(r, artists = []) {
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <polygon points="5 3 19 12 5 21 5 3"/>
     </svg>
-    ${formatTimestamp(r.timestamp_seconds ?? 0)}
+    ${formatDuration(r.duration_seconds)}
   `;
 
   li.appendChild(meta);

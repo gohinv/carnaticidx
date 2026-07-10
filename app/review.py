@@ -1,5 +1,5 @@
 """
-Review blueprint — interactive draft resolution and piece enrichment.
+Review blueprint — interactive draft resolution and record editing.
 
 Routes
 ------
@@ -11,7 +11,11 @@ POST /review/drafts/<id>/skip       → mark skipped
 POST /review/drafts/<id>/reject     → mark rejected
 GET  /review/pieces/search          → trgm piece search (?q=&limit=)
 GET  /review/pieces/incomplete      → pieces with any NULL FK
-PATCH /review/pieces/<id>           → fill in raga/composer/talam/kind
+GET  /review/pieces/<id>            → piece detail + setlist appearances
+PATCH /review/pieces/<id>           → edit name/raga/composer/talam/kind
+GET  /review/concerts/search        → concert search (?q=&limit=)
+GET  /review/concerts/<id>/setlist  → editable setlist for a concert
+PATCH /review/setlist/<id>          → edit piece/timestamp/sequence
 GET  /review/lookup/ragas           → all raga names
 GET  /review/lookup/composers       → all composer names
 GET  /review/lookup/talams          → all talam names
@@ -80,9 +84,23 @@ def _piece_summary(p) -> dict:
 def _setlist_item_summary(si) -> dict:
     return {
         "id": si.id,
+        "concert_id": si.concert_id,
         "sequence_number": si.sequence_number,
         "timestamp_seconds": si.timestamp_seconds,
+        "piece_id": si.piece_id,
         "piece": _piece_summary(si.piece) if si.piece else None,
+    }
+
+
+def _concert_summary(c) -> dict:
+    return {
+        "id": c.id,
+        "youtube_id": c.youtube_id,
+        "title": c.title,
+        "year": c.year,
+        "venue": c.venue,
+        "duration_seconds": c.duration_seconds,
+        "url": f"https://www.youtube.com/watch?v={c.youtube_id}",
     }
 
 
@@ -282,6 +300,9 @@ def resolve_draft(draft_id: int):
     ).first()
     if existing:
         setlist_item = existing
+        setlist_item.piece_id = piece.id
+        if draft.timestamp_seconds is not None:
+            setlist_item.timestamp_seconds = draft.timestamp_seconds
     else:
         setlist_item = SetlistItem(
             concert_id=concert.id,
@@ -376,6 +397,38 @@ def incomplete_pieces():
                     "items": [_piece_summary(p) for p in pieces]})
 
 
+@review_bp.route("/pieces/<int:piece_id>")
+def get_piece(piece_id: int):
+    db, Concert, *_, Piece, PieceAlias, SetlistItem, IngestDraft = _models()
+    piece = db.session.get(Piece, piece_id)
+    if not piece:
+        abort(404)
+
+    appearances = (
+        db.session.query(SetlistItem, Concert)
+        .join(Concert, SetlistItem.concert_id == Concert.id)
+        .filter(SetlistItem.piece_id == piece_id)
+        .order_by(Concert.year.desc().nullslast(), Concert.title)
+        .all()
+    )
+    result = _piece_summary(piece)
+    result["aliases"] = [a.alias for a in piece.aliases]
+    result["appearances"] = [
+        {
+            "setlist_item_id": si.id,
+            "concert_id": c.id,
+            "concert_title": c.title,
+            "concert_year": c.year,
+            "sequence_number": si.sequence_number,
+            "timestamp_seconds": si.timestamp_seconds,
+            "timestamp_fmt": _fmt_ts(si.timestamp_seconds),
+            "url": f"https://www.youtube.com/watch?v={c.youtube_id}&t={si.timestamp_seconds}",
+        }
+        for si, c in appearances
+    ]
+    return jsonify(result)
+
+
 @review_bp.route("/pieces/<int:piece_id>", methods=["PATCH"])
 def patch_piece(piece_id: int):
     db, _, _, Raga, Talam, Composer, Piece, *_ = _models()
@@ -386,7 +439,7 @@ def patch_piece(piece_id: int):
     data = request.get_json(force=True) or {}
 
     def _resolve_fk(model, name_val):
-        if not name_val:
+        if name_val is None or name_val == "":
             return None
         row = db.session.query(model).filter_by(name=name_val).first()
         if not row:
@@ -395,23 +448,150 @@ def patch_piece(piece_id: int):
             db.session.flush()
         return row
 
+    if "name" in data:
+        name = (data["name"] or "").strip()
+        if not name:
+            return jsonify({"error": "name cannot be empty"}), 400
+        piece.name = name
+
     if "raga" in data:
         row = _resolve_fk(Raga, data["raga"])
-        if row:
-            piece.raga_id = row.id
+        piece.raga_id = row.id if row else None
     if "composer" in data:
         row = _resolve_fk(Composer, data["composer"])
-        if row:
-            piece.composer_id = row.id
+        piece.composer_id = row.id if row else None
     if "talam" in data:
         row = _resolve_fk(Talam, data["talam"])
-        if row:
-            piece.talam_id = row.id
-    if "kind" in data and data["kind"]:
-        piece.kind = data["kind"]
+        piece.talam_id = row.id if row else None
+    if "kind" in data:
+        kind = data["kind"]
+        piece.kind = kind if kind else None
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 400
     return jsonify(_piece_summary(piece))
+
+
+# ---------------------------------------------------------------------------
+# Concert / setlist endpoints
+# ---------------------------------------------------------------------------
+
+@review_bp.route("/concerts/search")
+def search_concerts():
+    from sqlalchemy import or_
+    db, Concert, *_ = _models()
+    q = request.args.get("q", "").strip()
+    limit = min(int(request.args.get("limit", 20)), 50)
+    if not q:
+        return jsonify([])
+
+    rows = (
+        db.session.query(Concert)
+        .filter(
+            or_(
+                Concert.title.ilike(f"%{q}%"),
+                Concert.youtube_id.ilike(f"%{q}%"),
+                Concert.venue.ilike(f"%{q}%"),
+            )
+        )
+        .order_by(Concert.year.desc().nullslast(), Concert.title)
+        .limit(limit)
+        .all()
+    )
+    return jsonify([_concert_summary(c) for c in rows])
+
+
+@review_bp.route("/concerts/<int:concert_id>/setlist")
+def concert_setlist(concert_id: int):
+    db, Concert, *_, SetlistItem, IngestDraft = _models()
+    concert = db.session.get(Concert, concert_id)
+    if not concert:
+        abort(404)
+
+    items = (
+        db.session.query(SetlistItem)
+        .filter_by(concert_id=concert_id)
+        .order_by(SetlistItem.sequence_number)
+        .all()
+    )
+    return jsonify({
+        "concert": _concert_summary(concert),
+        "items": [_setlist_item_summary(si) for si in items],
+    })
+
+
+@review_bp.route("/setlist/<int:item_id>", methods=["PATCH"])
+def patch_setlist_item(item_id: int):
+    """
+    Body (all optional):
+      piece_id           — existing piece id, or null to unlink
+      timestamp_seconds  — int >= 0
+      sequence_number    — int >= 1 (must be unique within concert)
+    """
+    db, *_, Piece, PieceAlias, SetlistItem, IngestDraft = _models()
+    item = db.session.get(SetlistItem, item_id)
+    if not item:
+        abort(404)
+
+    data = request.get_json(force=True) or {}
+
+    if "piece_id" in data:
+        piece_id = data["piece_id"]
+        if piece_id is None:
+            item.piece_id = None
+        else:
+            piece = db.session.get(Piece, piece_id)
+            if not piece:
+                return jsonify({"error": "piece_id not found"}), 400
+            item.piece_id = piece.id
+
+    if "timestamp_seconds" in data:
+        ts = data["timestamp_seconds"]
+        if ts is None:
+            return jsonify({"error": "timestamp_seconds cannot be null"}), 400
+        try:
+            ts = int(ts)
+        except (TypeError, ValueError):
+            return jsonify({"error": "timestamp_seconds must be an integer"}), 400
+        if ts < 0:
+            return jsonify({"error": "timestamp_seconds must be >= 0"}), 400
+        item.timestamp_seconds = ts
+
+    if "sequence_number" in data:
+        seq = data["sequence_number"]
+        try:
+            seq = int(seq)
+        except (TypeError, ValueError):
+            return jsonify({"error": "sequence_number must be an integer"}), 400
+        if seq < 1:
+            return jsonify({"error": "sequence_number must be >= 1"}), 400
+        conflict = (
+            db.session.query(SetlistItem)
+            .filter(
+                SetlistItem.concert_id == item.concert_id,
+                SetlistItem.sequence_number == seq,
+                SetlistItem.id != item.id,
+            )
+            .first()
+        )
+        if conflict:
+            return jsonify({
+                "error": f"sequence_number {seq} already used by setlist item {conflict.id}",
+            }), 400
+        item.sequence_number = seq
+
+    try:
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 400
+
+    # Refresh relationship for serialiser
+    db.session.refresh(item)
+    return jsonify(_setlist_item_summary(item))
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +667,32 @@ REVIEW_HTML = r"""<!DOCTYPE html>
   #sidebar { width: 280px; border-right: 1px solid #1e1e1e; display: flex; flex-direction: column; flex-shrink: 0; }
   #list-container { flex: 1; overflow-y: auto; }
   #detail { flex: 1; overflow-y: auto; padding: 24px 28px; }
-  #pieces-panel { flex: 1; overflow-y: auto; padding: 24px 28px; }
+  #pieces-panel, #setlists-panel { flex: 1; overflow: hidden; padding: 20px 28px; display: none; flex-direction: column; }
+  .edit-layout { display: flex; gap: 28px; min-height: 0; flex: 1; }
+  .edit-list { width: 320px; flex-shrink: 0; border-right: 1px solid #1e1e1e; padding-right: 18px; overflow-y: auto; }
+  .edit-form { flex: 1; min-width: 0; overflow-y: auto; }
+  .panel-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  .panel-search { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-shrink: 0; }
+  .search-box { flex: 1; background: #1a1a1a; border: 1px solid #2e2e2e; color: #e8e8e8; padding: 10px 12px; border-radius: 7px; font-size: 14px; }
+  .search-box:focus { outline: none; border-color: #4a7cdc; }
+  .search-box::placeholder { color: #555; }
+  .result-item { padding: 8px 10px; border-radius: 5px; cursor: pointer; margin-bottom: 2px; }
+  .result-item:hover { background: #161616; }
+  .result-item.active { background: #1c2030; }
+  .result-title { font-size: 13px; }
+  .result-sub { font-size: 11px; color: #555; margin-top: 2px; }
+  .filter-row { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+  .filter-row label { font-size: 12px; color: #666; display: flex; gap: 6px; align-items: center; cursor: pointer; white-space: nowrap; }
+  .appearance { font-size: 12px; padding: 6px 0; border-bottom: 1px solid #1a1a1a; }
+  .appearance a { color: #4a7cdc; }
+  .setlist-edit-row { display: grid; grid-template-columns: 56px 80px 1fr auto; gap: 8px; align-items: start; padding: 10px 0; border-bottom: 1px solid #1a1a1a; }
+  .setlist-edit-row input { background: #1a1a1a; border: 1px solid #2e2e2e; color: #e8e8e8; padding: 6px 8px; border-radius: 5px; font-size: 13px; width: 100%; }
+  .setlist-edit-row input:focus { outline: none; border-color: #4a7cdc; }
+  .setlist-piece-wrap { position: relative; }
+  .setlist-piece-sub { font-size: 11px; color: #555; margin-top: 3px; }
+  .btn-save { background: #1e2535; color: #6a9ae8; padding: 6px 12px; }
+  .btn-sm { padding: 6px 12px; font-size: 12px; }
+  .dirty input { border-color: #a09050 !important; }
 
   /* List items */
   .draft-item { padding: 10px 14px; border-bottom: 1px solid #1a1a1a; cursor: pointer; }
@@ -569,7 +774,8 @@ REVIEW_HTML = r"""<!DOCTYPE html>
   <h1>Carnatic Review</h1>
   <div id="tabs">
     <div class="tab active" onclick="switchTab('drafts')">Drafts</div>
-    <div class="tab" onclick="switchTab('pieces')">Incomplete Pieces</div>
+    <div class="tab" onclick="switchTab('pieces')">Pieces</div>
+    <div class="tab" onclick="switchTab('setlists')">Setlists</div>
   </div>
   <div id="stats">Loading…</div>
 </div>
@@ -585,9 +791,14 @@ REVIEW_HTML = r"""<!DOCTYPE html>
     <div class="empty"><span>📋</span>Select a draft from the list</div>
   </div>
 
-  <!-- Main: pieces panel (hidden initially) -->
-  <div id="pieces-panel" style="display:none">
-    <div class="empty"><span>🎵</span>Loading pieces…</div>
+  <!-- Main: pieces panel -->
+  <div id="pieces-panel">
+    <div class="empty"><span>🎵</span>Search or load incomplete pieces</div>
+  </div>
+
+  <!-- Main: setlists panel -->
+  <div id="setlists-panel">
+    <div class="empty"><span>🎼</span>Search a concert to edit its setlist</div>
   </div>
 </div>
 
@@ -602,6 +813,13 @@ let ragas = [], composers = [], talams = [];
 let selectedPieceId = null;
 let suggestionIdx = -1;
 let currentTab = 'drafts';
+let pieceEditId = null;
+let pieceSearchTimer = null;
+let concertSearchTimer = null;
+let setlistConcertId = null;
+let setlistPieceTimers = {};
+let setlistSuggestionIdx = {};
+const KIND_OPTIONS = ['','krithi','varnam','padam','tillana','viruttam','slokam','mangalam','bhajan','rtp'];
 
 // ---- Init ----
 async function init() {
@@ -660,12 +878,15 @@ async function refillDraftQueue() {
 function switchTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.tab').forEach((el, i) => {
-    el.classList.toggle('active', ['drafts','pieces'][i] === tab);
+    el.classList.toggle('active', ['drafts','pieces','setlists'][i] === tab);
   });
   document.getElementById('sidebar').style.display = tab === 'drafts' ? 'flex' : 'none';
-  document.getElementById('detail').style.display = tab === 'drafts' ? '' : 'none';
-  document.getElementById('pieces-panel').style.display = tab === 'pieces' ? '' : 'none';
-  if (tab === 'pieces') loadPieces();
+  document.getElementById('detail').style.display = tab === 'drafts' ? 'block' : 'none';
+  document.getElementById('pieces-panel').style.display = tab === 'pieces' ? 'flex' : 'none';
+  document.getElementById('setlists-panel').style.display = tab === 'setlists' ? 'flex' : 'none';
+  if (tab === 'pieces') initPiecesPanel();
+  if (tab === 'setlists') initSetlistsPanel();
+  if (tab === 'drafts') updateDraftStats();
 }
 
 // ---- Draft list ----
@@ -907,6 +1128,433 @@ function prevDraft() {
   if (currentIdx > 0) selectDraft(currentIdx - 1);
 }
 
+// ---- Pieces panel ----
+function initPiecesPanel() {
+  const panel = document.getElementById('pieces-panel');
+  if (!panel.dataset.ready) {
+    panel.innerHTML = `
+      <div class="panel-shell">
+        <div class="panel-search">
+          <input class="search-box" id="piece-edit-search" placeholder="Search pieces by name…"
+            oninput="onPieceEditSearch(this.value)" autocomplete="off">
+          <div class="filter-row">
+            <label><input type="checkbox" id="piece-incomplete-only" onchange="onPieceFilterChange()"> Incomplete only</label>
+          </div>
+        </div>
+        <div class="edit-layout">
+          <div class="edit-list">
+            <div id="piece-edit-results"></div>
+          </div>
+          <div class="edit-form" id="piece-edit-form">
+            <div class="empty"><span>🎵</span>Search for a piece to edit</div>
+          </div>
+        </div>
+      </div>`;
+    panel.dataset.ready = '1';
+  }
+  onPieceFilterChange();
+  requestAnimationFrame(() => document.getElementById('piece-edit-search')?.focus());
+}
+
+async function onPieceFilterChange() {
+  const incompleteOnly = document.getElementById('piece-incomplete-only')?.checked;
+  const q = document.getElementById('piece-edit-search')?.value?.trim() || '';
+  if (q.length >= 2) {
+    await runPieceSearch(q);
+    return;
+  }
+  if (incompleteOnly) {
+    await loadIncompletePieceList();
+  } else {
+    document.getElementById('piece-edit-results').innerHTML =
+      '<div style="color:#444;font-size:12px;padding:8px 0">Type at least 2 characters to search</div>';
+  }
+}
+
+async function loadIncompletePieceList() {
+  const res = await fetch('/review/pieces/incomplete?per_page=100');
+  const data = await res.json();
+  renderPieceResults(data.items, `${data.total} incomplete`);
+}
+
+function onPieceEditSearch(q) {
+  clearTimeout(pieceSearchTimer);
+  const incompleteOnly = document.getElementById('piece-incomplete-only')?.checked;
+  if (!q || q.length < 2) {
+    if (incompleteOnly) loadIncompletePieceList();
+    else {
+      const box = document.getElementById('piece-edit-results');
+      if (box) box.innerHTML = '<div style="color:#444;font-size:12px;padding:8px 0">Type at least 2 characters to search</div>';
+    }
+    return;
+  }
+  pieceSearchTimer = setTimeout(() => runPieceSearch(q), 180);
+}
+
+async function runPieceSearch(q) {
+  const incompleteOnly = document.getElementById('piece-incomplete-only')?.checked;
+  const res = await fetch(`/review/pieces/search?q=${encodeURIComponent(q)}&limit=30`);
+  let items = await res.json();
+  if (incompleteOnly) {
+    items = items.filter(p => !p.raga || !p.composer || !p.talam);
+  }
+  renderPieceResults(items, `${items.length} result${items.length === 1 ? '' : 's'}`);
+}
+
+function renderPieceResults(items, label) {
+  const box = document.getElementById('piece-edit-results');
+  if (!items.length) {
+    box.innerHTML = `<div style="color:#444;font-size:12px;padding:8px 0">No pieces found</div>`;
+    return;
+  }
+  box.innerHTML = `
+    <div style="color:#555;font-size:11px;margin-bottom:8px">${label}</div>
+    ${items.map(p => `
+      <div class="result-item${p.id === pieceEditId ? ' active' : ''}" onclick="selectPieceForEdit(${p.id})">
+        <div class="result-title">${escHtml(p.name)}</div>
+        <div class="result-sub">${[p.raga||'raga?', p.composer||'composer?', p.talam||'talam?', p.kind||'kind?'].join(' · ')}</div>
+      </div>`).join('')}`;
+}
+
+async function selectPieceForEdit(pieceId) {
+  pieceEditId = pieceId;
+  document.querySelectorAll('#piece-edit-results .result-item').forEach(el => {
+    el.classList.toggle('active', el.getAttribute('onclick') === `selectPieceForEdit(${pieceId})`);
+  });
+  const res = await fetch(`/review/pieces/${pieceId}`);
+  if (!res.ok) { toast('Piece not found', true); return; }
+  const p = await res.json();
+  renderPieceEditForm(p);
+}
+
+function renderPieceEditForm(p) {
+  const appearances = (p.appearances || []).map(a => `
+    <div class="appearance">
+      <a href="${a.url}" target="_blank">${escHtml(a.concert_title || 'Concert')}</a>
+      <span style="color:#555"> · ${a.concert_year || '?'} · seq ${a.sequence_number} · ${a.timestamp_fmt}</span>
+      <button class="btn btn-sm btn-save" style="margin-left:8px" onclick="openSetlistFromAppearance(${a.concert_id})">Edit setlist</button>
+    </div>`).join('');
+
+  document.getElementById('piece-edit-form').innerHTML = `
+    <div class="section">
+      <div class="label">Edit piece #${p.id}</div>
+      <div class="fields">
+        <div class="field" style="flex:2;min-width:200px">
+          <label>Name</label>
+          <input id="pe-name" value="${escHtml(p.name||'')}">
+        </div>
+        <div class="field">
+          <label>Kind</label>
+          <select id="pe-kind">
+            ${KIND_OPTIONS.map(k =>
+              `<option value="${k}"${k===(p.kind||'')?'selected':''}>${k||'—'}</option>`
+            ).join('')}
+          </select>
+        </div>
+        <div class="field">
+          <label>Raga</label>
+          ${datalistInput('pe-raga', 'pe-raga-list', ragas, p.raga||'')}
+        </div>
+        <div class="field">
+          <label>Composer</label>
+          ${datalistInput('pe-composer', 'pe-composer-list', composers, p.composer||'')}
+        </div>
+        <div class="field">
+          <label>Talam</label>
+          ${datalistInput('pe-talam', 'pe-talam-list', talams, p.talam||'')}
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-resolve" onclick="savePieceEdit()">Save piece</button>
+        <button class="btn btn-skip" onclick="clearPieceField('raga')">Clear raga</button>
+        <button class="btn btn-skip" onclick="clearPieceField('composer')">Clear composer</button>
+        <button class="btn btn-skip" onclick="clearPieceField('talam')">Clear talam</button>
+      </div>
+    </div>
+    <div class="section">
+      <div class="label">Appearances (${(p.appearances||[]).length})</div>
+      ${appearances || '<div style="color:#444;font-size:12px">Not on any setlist yet</div>'}
+    </div>
+    ${(p.aliases||[]).length ? `
+    <div class="section">
+      <div class="label">Aliases</div>
+      <div style="font-size:12px;color:#888">${p.aliases.map(escHtml).join(' · ')}</div>
+    </div>` : ''}`;
+}
+
+function clearPieceField(field) {
+  const el = document.getElementById('pe-' + field);
+  if (el) el.value = '';
+}
+
+async function savePieceEdit() {
+  if (!pieceEditId) return;
+  const body = {
+    name: document.getElementById('pe-name')?.value?.trim(),
+    kind: document.getElementById('pe-kind')?.value || null,
+    raga: document.getElementById('pe-raga')?.value?.trim() || null,
+    composer: document.getElementById('pe-composer')?.value?.trim() || null,
+    talam: document.getElementById('pe-talam')?.value?.trim() || null,
+  };
+  const res = await fetch(`/review/pieces/${pieceEditId}`, {
+    method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body),
+  });
+  if (res.ok) {
+    toast('✓ Piece saved');
+    await selectPieceForEdit(pieceEditId);
+    onPieceFilterChange();
+  } else {
+    const err = await res.json().catch(() => ({}));
+    toast(err.error || 'Save failed', true);
+  }
+}
+
+function openSetlistFromAppearance(concertId) {
+  switchTab('setlists');
+  loadConcertSetlist(concertId);
+}
+
+// ---- Setlists panel ----
+function initSetlistsPanel() {
+  const panel = document.getElementById('setlists-panel');
+  if (!panel.dataset.ready) {
+    panel.innerHTML = `
+      <div class="panel-shell">
+        <div class="panel-search">
+          <input class="search-box" id="concert-search" placeholder="Search concerts by title, venue, or YouTube id…"
+            oninput="onConcertSearch(this.value)" autocomplete="off">
+        </div>
+        <div class="edit-layout">
+          <div class="edit-list">
+            <div id="concert-results">
+              <div style="color:#444;font-size:12px;padding:8px 0">Type at least 2 characters to search</div>
+            </div>
+          </div>
+          <div class="edit-form" id="setlist-edit-form">
+            <div class="empty"><span>🎼</span>Search for a concert to edit its setlist</div>
+          </div>
+        </div>
+      </div>`;
+    panel.dataset.ready = '1';
+  }
+  requestAnimationFrame(() => document.getElementById('concert-search')?.focus());
+}
+
+function onConcertSearch(q) {
+  clearTimeout(concertSearchTimer);
+  const box = document.getElementById('concert-results');
+  if (!q || q.length < 2) {
+    if (box) box.innerHTML = '<div style="color:#444;font-size:12px;padding:8px 0">Type at least 2 characters to search</div>';
+    return;
+  }
+  concertSearchTimer = setTimeout(async () => {
+    const res = await fetch(`/review/concerts/search?q=${encodeURIComponent(q)}&limit=25`);
+    const items = await res.json();
+    if (!box) return;
+    if (!items.length) {
+      box.innerHTML = '<div style="color:#444;font-size:12px;padding:8px 0">No concerts found</div>';
+      return;
+    }
+    box.innerHTML = items.map(c => `
+      <div class="result-item${c.id === setlistConcertId ? ' active' : ''}" onclick="loadConcertSetlist(${c.id})">
+        <div class="result-title">${escHtml(c.title || c.youtube_id)}</div>
+        <div class="result-sub">${[c.year, c.venue, c.youtube_id].filter(Boolean).join(' · ')}</div>
+      </div>`).join('');
+  }, 180);
+}
+
+async function loadConcertSetlist(concertId) {
+  setlistConcertId = concertId;
+  document.querySelectorAll('#concert-results .result-item').forEach(el => {
+    el.classList.toggle('active', el.getAttribute('onclick') === `loadConcertSetlist(${concertId})`);
+  });
+  const res = await fetch(`/review/concerts/${concertId}/setlist`);
+  if (!res.ok) { toast('Concert not found', true); return; }
+  const data = await res.json();
+  renderSetlistEditor(data);
+}
+
+function renderSetlistEditor(data) {
+  const c = data.concert;
+  const rows = (data.items || []).map(si => {
+    const pieceName = si.piece ? si.piece.name : '';
+    const pieceSub = si.piece
+      ? [si.piece.raga, si.piece.composer, si.piece.talam].filter(Boolean).join(' · ')
+      : 'No piece linked';
+    return `
+      <div class="setlist-edit-row" id="si-row-${si.id}" data-piece-id="${si.piece_id || ''}">
+        <div>
+          <div class="label" style="margin-bottom:3px">Seq</div>
+          <input id="si-seq-${si.id}" type="number" min="1" value="${si.sequence_number}"
+            oninput="markSetlistDirty(${si.id})">
+        </div>
+        <div>
+          <div class="label" style="margin-bottom:3px">Time</div>
+          <input id="si-ts-${si.id}" value="${fmtTs(si.timestamp_seconds)}"
+            placeholder="m:ss" oninput="markSetlistDirty(${si.id})">
+        </div>
+        <div class="setlist-piece-wrap">
+          <div class="label" style="margin-bottom:3px">Piece</div>
+          <input id="si-piece-${si.id}" value="${escHtml(pieceName)}"
+            placeholder="Search piece…" autocomplete="off"
+            oninput="onSetlistPieceSearch(${si.id}, this.value)"
+            onkeydown="onSetlistPieceKey(event, ${si.id})">
+          <div class="setlist-piece-sub" id="si-piece-sub-${si.id}">${escHtml(pieceSub)}</div>
+          <div id="si-sugg-${si.id}" style="display:none"></div>
+        </div>
+        <div style="padding-top:18px;display:flex;flex-direction:column;gap:4px">
+          <button class="btn btn-sm btn-save" onclick="saveSetlistItem(${si.id})">Save</button>
+          <button class="btn btn-sm btn-skip" onclick="unlinkSetlistPiece(${si.id})">Unlink</button>
+          ${c.youtube_id ? `<a class="btn btn-sm btn-next" style="text-align:center" href="https://youtu.be/${c.youtube_id}?t=${si.timestamp_seconds||0}" target="_blank">▶</a>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+
+  document.getElementById('setlist-edit-form').innerHTML = `
+    <div class="section">
+      <div class="label">Concert</div>
+      <a class="concert-link" href="${c.url}" target="_blank">▶ ${escHtml(c.title || c.youtube_id)}</a>
+      <div style="font-size:12px;color:#555;margin-top:4px">${[c.year, c.venue].filter(Boolean).join(' · ')}</div>
+    </div>
+    <div class="section">
+      <div class="label">Setlist (${(data.items||[]).length} items)</div>
+      ${rows || '<div style="color:#444;font-size:12px">No setlist items</div>'}
+    </div>`;
+}
+
+function markSetlistDirty(id) {
+  document.getElementById(`si-row-${id}`)?.classList.add('dirty');
+}
+
+function parseTimestamp(val) {
+  if (val === '' || val == null) return null;
+  if (/^\d+$/.test(String(val).trim())) return parseInt(val, 10);
+  const parts = String(val).trim().split(':').map(Number);
+  if (parts.some(n => Number.isNaN(n))) return null;
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return null;
+}
+
+async function onSetlistPieceSearch(itemId, q) {
+  const row = document.getElementById(`si-row-${itemId}`);
+  if (row) row.dataset.pieceId = '';
+  markSetlistDirty(itemId);
+  clearTimeout(setlistPieceTimers[itemId]);
+  if (!q || q.length < 2) {
+    hideSetlistSuggestions(itemId);
+    return;
+  }
+  setlistPieceTimers[itemId] = setTimeout(async () => {
+    const res = await fetch(`/review/pieces/search?q=${encodeURIComponent(q)}&limit=8`);
+    const items = await res.json();
+    showSetlistSuggestions(itemId, items);
+  }, 180);
+}
+
+function showSetlistSuggestions(itemId, items) {
+  const box = document.getElementById(`si-sugg-${itemId}`);
+  if (!box) return;
+  if (!items.length) { box.style.display = 'none'; return; }
+  setlistSuggestionIdx[itemId] = -1;
+  box.style.cssText = 'position:absolute;left:0;right:0;top:100%;background:#1e1e1e;border:1px solid #2e2e2e;border-radius:0 0 6px 6px;z-index:10;max-height:180px;overflow-y:auto;';
+  box.innerHTML = items.map((p, i) => {
+    const sub = [p.raga, p.composer, p.talam].filter(Boolean).join(' · ');
+    return `<div class="suggestion" data-id="${p.id}" data-name="${escHtml(p.name)}" data-sub="${escHtml(sub)}"
+         onmousedown="pickSetlistPieceFromEl(${itemId}, this)"
+         onmouseover="setlistSuggestionIdx[${itemId}]=${i}">
+      <div>${escHtml(p.name)}</div>
+      <div class="suggestion-sub">${escHtml(sub)}</div>
+    </div>`;
+  }).join('');
+  box.style.display = 'block';
+}
+
+function hideSetlistSuggestions(itemId) {
+  const box = document.getElementById(`si-sugg-${itemId}`);
+  if (box) { box.style.display = 'none'; setlistSuggestionIdx[itemId] = -1; }
+}
+
+function onSetlistPieceKey(e, itemId) {
+  const box = document.getElementById(`si-sugg-${itemId}`);
+  const items = box ? box.querySelectorAll('.suggestion') : [];
+  let idx = setlistSuggestionIdx[itemId] ?? -1;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault(); idx = Math.min(idx + 1, items.length - 1); setlistSuggestionIdx[itemId] = idx;
+    items.forEach((el, i) => el.classList.toggle('active', i === idx));
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault(); idx = Math.max(idx - 1, -1); setlistSuggestionIdx[itemId] = idx;
+    items.forEach((el, i) => el.classList.toggle('active', i === idx));
+  } else if (e.key === 'Enter' && idx >= 0) {
+    e.preventDefault();
+    const el = items[idx];
+    if (el) pickSetlistPieceFromEl(itemId, el);
+  } else if (e.key === 'Escape') {
+    hideSetlistSuggestions(itemId);
+  }
+}
+
+function pickSetlistPieceFromEl(itemId, el) {
+  pickSetlistPiece(itemId, +el.dataset.id, el.dataset.name, el.dataset.sub || '');
+}
+
+function pickSetlistPiece(itemId, pieceId, name, sub) {
+  const row = document.getElementById(`si-row-${itemId}`);
+  const input = document.getElementById(`si-piece-${itemId}`);
+  const subEl = document.getElementById(`si-piece-sub-${itemId}`);
+  if (row) row.dataset.pieceId = String(pieceId);
+  if (input) input.value = name;
+  if (subEl) subEl.textContent = sub || 'Selected piece';
+  hideSetlistSuggestions(itemId);
+  markSetlistDirty(itemId);
+}
+
+async function unlinkSetlistPiece(itemId) {
+  const row = document.getElementById(`si-row-${itemId}`);
+  const input = document.getElementById(`si-piece-${itemId}`);
+  const subEl = document.getElementById(`si-piece-sub-${itemId}`);
+  if (row) row.dataset.pieceId = '';
+  if (input) input.value = '';
+  if (subEl) subEl.textContent = 'No piece linked';
+  markSetlistDirty(itemId);
+  await saveSetlistItem(itemId, true);
+}
+
+async function saveSetlistItem(itemId, unlinking=false) {
+  const row = document.getElementById(`si-row-${itemId}`);
+  const seq = parseInt(document.getElementById(`si-seq-${itemId}`)?.value, 10);
+  const ts = parseTimestamp(document.getElementById(`si-ts-${itemId}`)?.value);
+  if (Number.isNaN(seq) || seq < 1) { toast('Invalid sequence number', true); return; }
+  if (ts === null) { toast('Invalid timestamp (use seconds or m:ss)', true); return; }
+
+  const body = {
+    sequence_number: seq,
+    timestamp_seconds: ts,
+  };
+
+  const pieceInput = document.getElementById(`si-piece-${itemId}`)?.value?.trim();
+  if (unlinking || !pieceInput) {
+    body.piece_id = null;
+  } else if (row?.dataset.pieceId) {
+    body.piece_id = parseInt(row.dataset.pieceId, 10);
+  } else {
+    toast('Pick a piece from suggestions (or Unlink)', true);
+    return;
+  }
+
+  const res = await fetch(`/review/setlist/${itemId}`, {
+    method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body),
+  });
+  if (res.ok) {
+    toast('✓ Setlist item saved');
+    row?.classList.remove('dirty');
+    if (setlistConcertId) await loadConcertSetlist(setlistConcertId);
+  } else {
+    const err = await res.json().catch(() => ({}));
+    toast(err.error || 'Save failed', true);
+  }
+}
+
 // ---- Keyboard shortcuts ----
 document.addEventListener('keydown', e => {
   if (currentTab !== 'drafts') return;
@@ -921,70 +1569,6 @@ document.addEventListener('keydown', e => {
   if (e.key === 's') statusAction('skip');
   if (e.key === 'x') statusAction('reject');
 });
-
-// ---- Pieces panel ----
-async function loadPieces() {
-  const res = await fetch('/review/pieces/incomplete?per_page=100');
-  const data = await res.json();
-  if (data.items.length === 0) {
-    document.getElementById('pieces-panel').innerHTML =
-      '<div class="empty"><span>✅</span>All pieces have full metadata!</div>';
-    return;
-  }
-  document.getElementById('pieces-panel').innerHTML = `
-    <div style="margin-bottom:14px;color:#555;font-size:12px">${data.total} pieces with missing metadata</div>
-    ${data.items.map(p => `
-      <div class="piece-row" id="pr-${p.id}">
-        <div class="piece-name">${escHtml(p.name)}</div>
-        <div class="piece-fields">
-          <span class="pill${p.raga ? '' : ' missing'}" onclick="editPieceField(${p.id},'raga')">${p.raga || 'raga?'}</span>
-          <span class="pill${p.composer ? '' : ' missing'}" onclick="editPieceField(${p.id},'composer')">${p.composer || 'composer?'}</span>
-          <span class="pill${p.talam ? '' : ' missing'}" onclick="editPieceField(${p.id},'talam')">${p.talam || 'talam?'}</span>
-          <span class="pill pill-kind" onclick="editPieceField(${p.id},'kind')">${p.kind || 'kind?'}</span>
-        </div>
-      </div>`).join('')}
-  `;
-  [
-    {id:'raga', list:'ragas', opts:ragas},
-    {id:'composer', list:'composers', opts:composers},
-    {id:'talam', list:'talams', opts:talams},
-  ].forEach(({id, list, opts}) => {
-    if (!document.getElementById(list)) {
-      const dl = document.createElement('datalist');
-      dl.id = list;
-      dl.innerHTML = opts.map(o => `<option value="${escHtml(o)}">`).join('');
-      document.body.appendChild(dl);
-    }
-  });
-}
-
-async function editPieceField(pieceId, field) {
-  const pill = document.querySelector(`#pr-${pieceId} .pill[onclick*="${field}"]`);
-  const current = pill ? pill.textContent.replace('?','').trim() : '';
-  const input = document.createElement('input');
-  input.value = current.endsWith('?') ? '' : current;
-  input.setAttribute('list', field === 'kind' ? '' : field+'s');
-  input.style.cssText = 'background:#1a1a1a;border:1px solid #4a7cdc;color:#e8e8e8;padding:3px 7px;border-radius:4px;font-size:12px;width:120px;';
-  pill.replaceWith(input);
-  input.focus();
-
-  async function commit() {
-    const val = input.value.trim();
-    if (val) {
-      await fetch(`/review/pieces/${pieceId}`, {
-        method: 'PATCH', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({[field]: val}),
-      });
-      toast(`✓ Updated ${field}`);
-    }
-    loadPieces();
-  }
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); commit(); }
-    if (e.key === 'Escape') loadPieces();
-  });
-  input.addEventListener('blur', commit);
-}
 
 // ---- Utils ----
 function fmtTs(s) {
