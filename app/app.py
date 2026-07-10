@@ -155,6 +155,74 @@ class PieceAlias(db.Model):
         ),
     )
 
+# USER CONTRIBUTIONS
+
+class ConcertDraft(db.Model):
+    __tablename__ = 'concert_drafts'
+    id = db.Column(db.Integer, primary_key=True)
+    youtube_id = db.Column(db.String(255), nullable=False)
+    title = db.Column(db.String(255), index=True)
+    year = db.Column(db.Integer, index=True)
+    venue = db.Column(db.String(255))
+    duration_seconds = db.Column(db.Integer, nullable=True)
+
+    status = db.Column(db.String(50), default='submitted', index=True)
+
+    setlist_item_drafts = db.relationship(
+        'SetlistItemDraft',
+        back_populates='concert_draft',
+        order_by='SetlistItemDraft.sequence_number',
+        cascade='all, delete-orphan',
+    )
+    concert_artist_drafts = db.relationship(
+        'ConcertArtistDraft',
+        back_populates='concert_draft',
+        cascade='all, delete-orphan',
+    )
+
+class SetlistItemDraft(db.Model):
+    __tablename__ = 'setlist_item_drafts'
+    id = db.Column(db.Integer, primary_key=True)
+    concert_draft_id = db.Column(db.Integer, db.ForeignKey('concert_drafts.id', ondelete='CASCADE'), nullable=False, index=True)
+
+    # existing piece selected by user
+    piece_id = db.Column(db.Integer, db.ForeignKey('pieces.id', ondelete='SET NULL'), nullable=True, index=True)
+
+    # new piece data entered by user
+    piece_name = db.Column(db.String(255), nullable=False)
+    raga_name = db.Column(db.String(255), nullable=True)
+    talam_name = db.Column(db.String(255), nullable=True)
+    composer_name = db.Column(db.String(255), nullable=True)
+    kind = db.Column(db.String(50), nullable=True)
+
+    timestamp_seconds = db.Column(db.Integer, nullable=False)
+    sequence_number = db.Column(db.Integer, nullable=False)
+
+    concert_draft = db.relationship('ConcertDraft', back_populates='setlist_item_drafts')
+    piece = db.relationship('Piece')
+
+    __table_args__ = (
+        db.UniqueConstraint('concert_draft_id', 'sequence_number', name='unique_concert_draft_sequence'),
+    )
+
+class ConcertArtistDraft(db.Model):
+    __tablename__ = 'concert_artist_drafts'
+    id = db.Column(db.Integer, primary_key=True)
+    concert_draft_id = db.Column(db.Integer, db.ForeignKey('concert_drafts.id', ondelete='CASCADE'), nullable=False, index=True)
+    
+    # only populate if existing artist
+    artist_id = db.Column(db.Integer, db.ForeignKey('artists.id', ondelete='SET NULL'), nullable=True, index=True)
+
+    # what the user entered
+    artist_name = db.Column(db.String(255), nullable=False)
+    instrument = db.Column(db.String(255))
+    role = db.Column(db.String(255))  # "main artist" or "accompanist"
+
+    concert_draft = db.relationship('ConcertDraft', back_populates='concert_artist_drafts')
+    artist = db.relationship('Artist')
+
+
+# AUTOMATIC INGESTION
 
 class IngestDraft(db.Model):
     __tablename__ = 'ingest_drafts'
@@ -179,7 +247,12 @@ class IngestDraft(db.Model):
         return f"<IngestDraft {self.id} [{self.status}] {self.parsed_piece}>"
 
 
-# CLIENT ENDPOINTS
+# CLIENT ENDPOINTS - WRITE
+
+
+
+
+# CLIENT ENDPOINTS - READ
 
 # Autocomplete Piece Names
 @app.route('/pieces/autocomplete/<string:prefix>', methods=['GET'])
