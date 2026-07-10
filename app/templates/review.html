@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Carnatic Review</title>
+<link rel="stylesheet" href="{{ url_for('review.static', filename='review.css') }}">
+
+</head>
+<body>
+
+<div id="topbar">
+  <h1>Carnatic Review</h1>
+  <div id="tabs">
+    <div class="tab active" onclick="switchTab('drafts')">Drafts</div>
+    <div class="tab" onclick="switchTab('pieces')">Pieces</div>
+    <div class="tab" onclick="switchTab('setlists')">Setlists</div>
+  </div>
+  <div id="stats">Loading…</div>
+</div>
+
+<div id="main">
+  <!-- Sidebar: draft list -->
+  <div id="sidebar">
+    <div id="list-container"></div>
+  </div>
+
+  <!-- Main: draft detail -->
+  <div id="detail">
+    <div class="empty"><span>📋</span>Select a draft from the list</div>
+  </div>
+
+  <!-- Main: pieces panel -->
+  <div id="pieces-panel">
+    <div class="empty"><span>🎵</span>Search or load incomplete pieces</div>
+  </div>
+
+  <!-- Main: setlists panel -->
+  <div id="setlists-panel">
+    <div class="empty"><span>🎼</span>Search a concert to edit its setlist</div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="{{ url_for('review.static', filename='review.js') }}"></script>
+
+</body>
+</html>
