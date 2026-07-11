@@ -1,5 +1,5 @@
 from math import pi
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template, request
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from dotenv import load_dotenv
@@ -249,8 +249,82 @@ class IngestDraft(db.Model):
 
 # CLIENT ENDPOINTS - WRITE
 
+@app.route('/contributions/create_concert_draft', methods=['POST'])
+def create_concert_draft():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Request body must be JSON"}), 400
 
+    youtube_id = (data.get('youtube_id') or '').strip()
+    title = (data.get('title') or '').strip()
+    year = data.get('year')
+    venue = data.get('venue')
+    duration_seconds = data.get('duration_seconds')
+    artists = data.get('artists') or []
+    setlist = data.get('setlist') or []
 
+    if not youtube_id:
+        return jsonify({"error": "youtube_id is required"}), 400
+    if not title:
+        return jsonify({"error": "title is required"}), 400
+    if not artists:
+        return jsonify({"error": "at least one artist is required"}), 400
+    if not setlist:
+        return jsonify({"error": "at least one setlist item is required"}), 400
+
+    for i, artist in enumerate(artists):
+        if not (artist.get('artist_name') or '').strip():
+            return jsonify({"error": f"artist {i + 1}: name is required"}), 400
+
+    for i, item in enumerate(setlist):
+        if not (item.get('piece_name') or '').strip():
+            return jsonify({"error": f"setlist item {i + 1}: piece name is required"}), 400
+        if item.get('timestamp_seconds') is None:
+            return jsonify({"error": f"setlist item {i + 1}: timestamp is required"}), 400
+        if not item.get('sequence_number'):
+            return jsonify({"error": f"setlist item {i + 1}: sequence is required"}), 400
+
+    try:
+        concert_draft = ConcertDraft(
+            youtube_id=youtube_id,
+            title=title,
+            year=year,
+            venue=venue,
+            duration_seconds=duration_seconds,
+            status='submitted',
+        )
+        db.session.add(concert_draft)
+        db.session.flush()
+
+        for artist in artists:
+            concert_artist_draft = ConcertArtistDraft(
+                concert_draft_id=concert_draft.id,
+                artist_id=artist.get('artist_id') or None,
+                artist_name=artist.get('artist_name').strip(),
+                instrument=artist.get('instrument'),
+                role=artist.get('role'),
+            )
+            db.session.add(concert_artist_draft)
+
+        for setlist_item in setlist:
+            setlist_item_draft = SetlistItemDraft(
+                concert_draft_id=concert_draft.id,
+                piece_id=setlist_item.get('piece_id') or None,
+                piece_name=setlist_item.get('piece_name').strip(),
+                raga_name=setlist_item.get('raga_name'),
+                talam_name=setlist_item.get('talam_name'),
+                composer_name=setlist_item.get('composer_name'),
+                kind=setlist_item.get('kind'),
+                timestamp_seconds=setlist_item.get('timestamp_seconds'),
+                sequence_number=setlist_item.get('sequence_number'),
+            )
+            db.session.add(setlist_item_draft)
+
+        db.session.commit()
+        return jsonify({"id": concert_draft.id, "status": concert_draft.status}), 201
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 400
 
 # CLIENT ENDPOINTS - READ
 

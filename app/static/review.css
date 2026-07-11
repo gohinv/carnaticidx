@@ -23,7 +23,11 @@
   .panel-search { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-shrink: 0; }
   .search-box { flex: 1; background: #1a1a1a; border: 1px solid #2e2e2e; color: #e8e8e8; padding: 10px 12px; border-radius: 7px; font-size: 14px; }
   .search-box:focus { outline: none; border-color: #4a7cdc; }
-  .search-box::placeholder { color: #555; }
+  input::placeholder,
+  textarea::placeholder {
+    color: #3d3a36;
+    opacity: 1;
+  }
   .result-item { padding: 8px 10px; border-radius: 5px; cursor: pointer; margin-bottom: 2px; }
   .result-item:hover { background: #161616; }
   .result-item.active { background: #1c2030; }

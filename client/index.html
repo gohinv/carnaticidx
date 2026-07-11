@@ -19,6 +19,7 @@
     <div class="tabs" role="tablist">
       <button class="tab active" role="tab" data-tab="pieces">Pieces</button>
       <button class="tab" role="tab" data-tab="concerts">Concerts</button>
+      <button class="tab" role="tab" data-tab="contribute">Contribute</button>
     </div>
 
     <!-- PIECES TAB -->
@@ -80,6 +81,65 @@
         <p id="concert-empty-state" class="empty-state" style="display:none">No concerts found for this artist.</p>
       </div>
     </div>
+
+    <!-- CONTRIBUTE TAB -->
+    <div class="tab-panel" data-panel="contribute">
+      <p class="contribute-intro">
+        Submit a YouTube concert with its artists and setlist. Link existing pieces and artists when you can;
+        otherwise enter new names for review.
+      </p>
+
+      <form id="contribute-form" novalidate>
+        <section class="form-section">
+          <h3 class="form-section-title">Concert</h3>
+          <div class="form-grid">
+            <div class="form-field form-field-full">
+              <label for="contrib-youtube" class="search-label">YouTube URL or ID</label>
+              <input id="contrib-youtube" type="text" required spellcheck="false"
+                placeholder="https://www.youtube.com/watch?v=… or video id" />
+              <p id="contrib-youtube-hint" class="field-hint"></p>
+            </div>
+            <div class="form-field form-field-full">
+              <label for="contrib-title" class="search-label">Title</label>
+              <input id="contrib-title" type="text" required placeholder="Concert title" />
+            </div>
+            <div class="form-field">
+              <label for="contrib-year" class="search-label">Year</label>
+              <input id="contrib-year" type="number" min="1900" max="2100" placeholder="e.g. 1978" />
+            </div>
+            <div class="form-field">
+              <label for="contrib-venue" class="search-label">Venue</label>
+              <input id="contrib-venue" type="text" placeholder="Optional" />
+            </div>
+            <div class="form-field">
+              <label for="contrib-duration" class="search-label">Duration</label>
+              <input id="contrib-duration" type="text" placeholder="h:mm:ss or seconds (optional)" />
+            </div>
+          </div>
+        </section>
+
+        <section class="form-section">
+          <div class="form-section-header">
+            <h3 class="form-section-title">Artists</h3>
+            <button type="button" class="btn-text" id="add-artist-btn">+ Add artist</button>
+          </div>
+          <div id="contrib-artists" class="dynamic-list"></div>
+        </section>
+
+        <section class="form-section">
+          <div class="form-section-header">
+            <h3 class="form-section-title">Setlist</h3>
+            <button type="button" class="btn-text" id="add-setlist-btn">+ Add piece</button>
+          </div>
+          <div id="contrib-setlist" class="dynamic-list"></div>
+        </section>
+
+        <div class="form-actions">
+          <button type="submit" class="btn-primary" id="contrib-submit">Submit for review</button>
+          <p id="contrib-status" class="form-status" role="status" aria-live="polite"></p>
+        </div>
+      </form>
+    </div>
   </section>
 
   <!-- CONCERT DETAIL VIEW -->
@@ -105,6 +165,11 @@
   </section>
 </main>
 
+<script src="/common.js"></script>
+<script src="/pieces.js"></script>
+<script src="/concerts.js"></script>
+<script src="/contribute.js"></script>
+<script src="/concert-detail.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>
