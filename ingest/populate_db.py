@@ -323,6 +323,21 @@ KIND_PATTERNS: list[tuple[str, re.Pattern]] = [
     )),
 ]
 
+# Display names used when a setlist line is kind-only (e.g. "Varnam - raga - …")
+KIND_PIECE_NAMES: dict[str, str] = {
+    "varnam": "Varnam",
+    "tillana": "Tillana",
+    "javali": "Javali",
+    "padam": "Padam",
+    "slokam": "Slokam",
+    "viruttam": "Viruttam",
+    "mangalam": "Mangalam",
+    "tiruppavai": "Tiruppavai",
+    "tiruppugazh": "Tiruppugazh",
+    "bhajan": "Bhajan",
+    "rtp": "RTP",
+}
+
 
 def detect_kind(text: str) -> str | None:
     for kind, pat in KIND_PATTERNS:
@@ -682,6 +697,27 @@ class ConcertBlock:
     lines: list[ParsedLine]
 
 
+def _is_setlist_line(line: str) -> bool:
+    """Return whether a description line looks like a setlist entry."""
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if not _TS_RE.search(stripped) and not stripped[0:1].isdigit():
+        return False
+
+    bare = _TS_RE.sub("", stripped)
+    bare = re.sub(r"^\s*\d+\w*[\s.\-:]+", "", bare).strip(" -:")
+    if re.match(r"^than[iy]\b|^tani\b", bare, re.IGNORECASE):
+        return False
+    if re.search(
+        r"\bspeech\b|\bannouncement\b|\bthank you\b|\baudio complaint\b",
+        bare,
+        re.IGNORECASE,
+    ):
+        return False
+    return True
+
+
 def parse_file(filepath: str) -> list[ConcertBlock]:
     """Parse cleaned_data.txt into concert blocks."""
     path = Path(filepath)
@@ -729,17 +765,7 @@ def parse_file(filepath: str) -> list[ConcertBlock]:
 
             if not stripped:
                 continue
-            # Skip non-song commentary lines
-            if not _TS_RE.search(stripped) and not stripped[0:1].isdigit():
-                continue
-            # Skip standalone tani avartanam lines
-            bare = _TS_RE.sub("", stripped)
-            bare = re.sub(r"^\s*\d+\w*[\s.\-:]+", "", bare).strip(" -:")
-            if re.match(r"^than[iy]\b|^tani\b", bare, re.IGNORECASE):
-                continue
-            # Skip commentary / speech / announcement lines
-            if re.search(r"\bspeech\b|\bannouncement\b|\bthank you\b|\baudio complaint\b",
-                         bare, re.IGNORECASE):
+            if not _is_setlist_line(stripped):
                 continue
             current_lines.append(stripped)
 
@@ -752,6 +778,16 @@ def parse_file(filepath: str) -> list[ConcertBlock]:
             blocks.append(ConcertBlock(header=current_header, lines=parsed_lines))
 
     return blocks
+
+
+def parse_description(text: str) -> list["ClassifiedLine"]:
+    """Classify setlist-like lines pasted from a video description or comment."""
+    parsed_lines = [
+        tokenize_line(line)
+        for line in text.splitlines()
+        if _is_setlist_line(line)
+    ]
+    return [classify_tokens(line) for line in parsed_lines]
 
 
 # ---------------------------------------------------------------------------
@@ -828,14 +864,17 @@ def classify_tokens(parsed: ParsedLine) -> ClassifiedLine:
     # The first unclaimed token is most likely the piece name
     piece_name = piece_candidates[0] if piece_candidates else None
 
-    # For RTP lines, override piece name
-    if parsed.is_rtp:
-        piece_name = "RTP"
-
     # Determine kind
     kind = parsed.kind
     if kind is None and piece_name:
         kind = detect_kind(piece_name)
+
+    # Kind-only lines (e.g. "Varnam - raga - talam - composer") still need a piece name
+    if parsed.is_rtp:
+        piece_name = "RTP"
+        kind = kind or "rtp"
+    elif piece_name is None and kind:
+        piece_name = KIND_PIECE_NAMES.get(kind, kind.capitalize())
 
     # Confidence scoring
     confidence = _score_confidence(piece_name, raga, talam, composer, kind, parsed.is_rtp)

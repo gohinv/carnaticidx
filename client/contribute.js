@@ -1,5 +1,5 @@
 // contribute form options and dom refs
-const KIND_OPTIONS = ['', 'krithi', 'varnam', 'padam', 'tillana', 'viruttam', 'slokam', 'mangalam', 'bhajan', 'rtp'];
+const KIND_OPTIONS = ['', 'krithi', 'varnam', 'javali', 'padam', 'tillana', 'viruttam', 'slokam', 'mangalam', 'bhajan', 'tiruppavai', 'tiruppugazh', 'rtp'];
 const ROLE_OPTIONS = ['main artist', 'accompanist'];
 
 const contributeForm = document.getElementById('contribute-form');
@@ -9,9 +9,20 @@ const contribStatus = document.getElementById('contrib-status');
 const contribSubmit = document.getElementById('contrib-submit');
 const contribYoutube = document.getElementById('contrib-youtube');
 const contribYoutubeHint = document.getElementById('contrib-youtube-hint');
+const contribDescription = document.getElementById('contrib-description');
+const contribDescriptionHint = document.getElementById('contrib-description-hint');
+const prefillSetlistBtn = document.getElementById('prefill-setlist-btn');
 
 let artistRowSeq = 0;
 let setlistRowSeq = 0;
+
+function escapeHtmlAttribute(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+}
 
 // parse youtube url or bare video id
 function parseYoutubeId(raw) {
@@ -50,9 +61,26 @@ function parseTimestampInput(val) {
   return null;
 }
 
+function formatTimestamp(seconds) {
+  const total = Number(seconds);
+  if (!Number.isInteger(total) || total < 0) return '';
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
+  return `${minutes}:${String(secs).padStart(2, '0')}`;
+}
+
 function setContribStatus(msg, kind = '') {
   contribStatus.textContent = msg || '';
   contribStatus.className = 'form-status' + (kind ? ` ${kind}` : '');
+}
+
+function setPrefillStatus(msg, kind = '') {
+  contribDescriptionHint.textContent = msg || '';
+  contribDescriptionHint.className = 'field-hint' + (kind ? ` ${kind}` : '');
 }
 
 // autocomplete that remembers selected entity id
@@ -101,7 +129,7 @@ function addArtistRow(prefill = {}) {
       <div class="ac-wrap span-2">
         <label class="search-label" for="artist-name-${id}">Name</label>
         <input id="artist-name-${id}" type="text" data-field="artist_name" required
-          placeholder="Start typing to link an existing artist…" value="${prefill.artist_name || ''}" />
+          placeholder="Start typing to link an existing artist…" value="${escapeHtmlAttribute(prefill.artist_name)}" />
         <ul class="ac-list" id="artist-ac-${id}" role="listbox"></ul>
         <div class="linked-badge new" data-link-status>New artist (will be reviewed)</div>
       </div>
@@ -116,7 +144,7 @@ function addArtistRow(prefill = {}) {
       <div>
         <label class="search-label" for="artist-instrument-${id}">Instrument</label>
         <input id="artist-instrument-${id}" type="text" data-field="instrument"
-          placeholder="e.g. vocal, violin" value="${prefill.instrument || ''}" />
+          placeholder="e.g. vocal, violin" value="${escapeHtmlAttribute(prefill.instrument)}" />
       </div>
     </div>
   `;
@@ -194,31 +222,41 @@ function addSetlistRow(prefill = {}) {
     <div class="dynamic-row-fields">
       <div>
         <label class="search-label" for="sl-seq-${id}">Sequence</label>
-        <input id="sl-seq-${id}" type="number" min="1" data-field="sequence_number" value="${prefill.sequence_number || seq}" required />
+        <input id="sl-seq-${id}" type="number" min="1" data-field="sequence_number"
+          value="${escapeHtmlAttribute(prefill.sequence_number || seq)}" required />
       </div>
       <div>
         <label class="search-label" for="sl-ts-${id}">Timestamp</label>
         <input id="sl-ts-${id}" type="text" data-field="timestamp" required
-          placeholder="m:ss or seconds" value="${prefill.timestamp || ''}" />
+          placeholder="m:ss or seconds" value="${escapeHtmlAttribute(prefill.timestamp)}" />
       </div>
       <div class="ac-wrap span-2">
         <label class="search-label" for="sl-piece-${id}">Piece</label>
         <input id="sl-piece-${id}" type="text" data-field="piece_name" required
-          placeholder="Start typing to link an existing piece…" value="${prefill.piece_name || ''}" />
+          placeholder="Start typing to link an existing piece…" value="${escapeHtmlAttribute(prefill.piece_name)}" />
         <ul class="ac-list" id="sl-piece-ac-${id}" role="listbox"></ul>
         <div class="linked-badge new" data-link-status>New piece (will be reviewed)</div>
       </div>
-      <div>
+      <div class="ac-wrap">
         <label class="search-label" for="sl-raga-${id}">Raga</label>
-        <input id="sl-raga-${id}" type="text" data-field="raga_name" placeholder="Optional" value="${prefill.raga_name || ''}" />
+        <input id="sl-raga-${id}" type="text" data-field="raga_name"
+          placeholder="Type to link or enter a new raga" value="${escapeHtmlAttribute(prefill.raga_name)}" />
+        <ul class="ac-list" id="sl-raga-ac-${id}" role="listbox"></ul>
+        <div class="linked-badge new" data-raga-link-status>New raga (will be reviewed)</div>
       </div>
-      <div>
+      <div class="ac-wrap">
         <label class="search-label" for="sl-talam-${id}">Talam</label>
-        <input id="sl-talam-${id}" type="text" data-field="talam_name" placeholder="Optional" value="${prefill.talam_name || ''}" />
+        <input id="sl-talam-${id}" type="text" data-field="talam_name"
+          placeholder="Type to link or enter a new talam" value="${escapeHtmlAttribute(prefill.talam_name)}" />
+        <ul class="ac-list" id="sl-talam-ac-${id}" role="listbox"></ul>
+        <div class="linked-badge new" data-talam-link-status>New talam (will be reviewed)</div>
       </div>
-      <div>
+      <div class="ac-wrap">
         <label class="search-label" for="sl-composer-${id}">Composer</label>
-        <input id="sl-composer-${id}" type="text" data-field="composer_name" placeholder="Optional" value="${prefill.composer_name || ''}" />
+        <input id="sl-composer-${id}" type="text" data-field="composer_name"
+          placeholder="Type to link or enter a new composer" value="${escapeHtmlAttribute(prefill.composer_name)}" />
+        <ul class="ac-list" id="sl-composer-ac-${id}" role="listbox"></ul>
+        <div class="linked-badge new" data-composer-link-status>New composer (will be reviewed)</div>
       </div>
       <div>
         <label class="search-label" for="sl-kind-${id}">Kind</label>
@@ -242,6 +280,61 @@ function addSetlistRow(prefill = {}) {
   const composerInput = row.querySelector('[data-field="composer_name"]');
   const kindSelect = row.querySelector('[data-field="kind"]');
 
+  const wireMetadataAutocomplete = ({ entity, input, listId, endpoint, statusSelector }) => {
+    const entityStatus = row.querySelector(statusSelector);
+    const metadataLinker = wireEntityAutocomplete({
+      input,
+      list: row.querySelector(listId),
+      fetchUrl: (q) => `${API}/${endpoint}/autocomplete/${encodeURIComponent(q)}`,
+      renderItem: (li, item) => {
+        const name = document.createElement('div');
+        name.className = 'ac-name';
+        name.textContent = item.name;
+        li.appendChild(name);
+      },
+      onPick: () => {
+        entityStatus.textContent = `Linked to existing ${entity}`;
+        entityStatus.classList.remove('new');
+      },
+      onClear: () => {
+        entityStatus.textContent = `New ${entity} (will be reviewed)`;
+        entityStatus.classList.add('new');
+      },
+    });
+
+    return { linker: metadataLinker, status: entityStatus };
+  };
+
+  const raga = wireMetadataAutocomplete({
+    entity: 'raga',
+    input: ragaInput,
+    listId: `#sl-raga-ac-${id}`,
+    endpoint: 'ragas',
+    statusSelector: '[data-raga-link-status]',
+  });
+  const talam = wireMetadataAutocomplete({
+    entity: 'talam',
+    input: talamInput,
+    listId: `#sl-talam-ac-${id}`,
+    endpoint: 'talams',
+    statusSelector: '[data-talam-link-status]',
+  });
+  const composer = wireMetadataAutocomplete({
+    entity: 'composer',
+    input: composerInput,
+    listId: `#sl-composer-ac-${id}`,
+    endpoint: 'composers',
+    statusSelector: '[data-composer-link-status]',
+  });
+
+  const linkMetadataFromPiece = (metadata, item, nameKey, idKey, input, entity) => {
+    if (!item[nameKey]) return;
+    input.value = item[nameKey];
+    metadata.linker.setSelectedId(item[idKey]);
+    metadata.status.textContent = `Linked to existing ${entity}`;
+    metadata.status.classList.remove('new');
+  };
+
   const linker = wireEntityAutocomplete({
     input: pieceInput,
     list,
@@ -259,9 +352,9 @@ function addSetlistRow(prefill = {}) {
     onPick: (item) => {
       status.textContent = 'Linked to existing piece';
       status.classList.remove('new');
-      if (item.raga) ragaInput.value = item.raga;
-      if (item.talam) talamInput.value = item.talam;
-      if (item.composer) composerInput.value = item.composer;
+      linkMetadataFromPiece(raga, item, 'raga', 'raga_id', ragaInput, 'raga');
+      linkMetadataFromPiece(talam, item, 'talam', 'talam_id', talamInput, 'talam');
+      linkMetadataFromPiece(composer, item, 'composer', 'composer_id', composerInput, 'composer');
     },
     onClear: () => {
       status.textContent = 'New piece (will be reviewed)';
@@ -275,6 +368,17 @@ function addSetlistRow(prefill = {}) {
     status.classList.remove('new');
   }
 
+  [
+    [raga, prefill.raga_id, 'raga'],
+    [talam, prefill.talam_id, 'talam'],
+    [composer, prefill.composer_id, 'composer'],
+  ].forEach(([metadata, selectedId, entity]) => {
+    if (!selectedId) return;
+    metadata.linker.setSelectedId(selectedId);
+    metadata.status.textContent = `Linked to existing ${entity}`;
+    metadata.status.classList.remove('new');
+  });
+
   row._getSetlistDraft = () => {
     const ts = parseTimestampInput(row.querySelector('[data-field="timestamp"]').value);
     const seq = parseInt(row.querySelector('[data-field="sequence_number"]').value, 10);
@@ -283,8 +387,11 @@ function addSetlistRow(prefill = {}) {
       timestamp_seconds: ts,
       piece_id: linker.getSelectedId(),
       piece_name: pieceInput.value.trim(),
+      raga_id: raga.linker.getSelectedId(),
       raga_name: ragaInput.value.trim() || null,
+      talam_id: talam.linker.getSelectedId(),
       talam_name: talamInput.value.trim() || null,
+      composer_id: composer.linker.getSelectedId(),
       composer_name: composerInput.value.trim() || null,
       kind: kindSelect.value || null,
     };
@@ -330,6 +437,73 @@ contribYoutube.addEventListener('input', () => {
   } else {
     contribYoutubeHint.textContent = 'Could not parse a YouTube video id';
     contribYoutubeHint.className = 'field-hint err';
+  }
+});
+
+function setlistHasUserEdits() {
+  const rows = [...contribSetlistEl.children];
+  if (rows.length !== 1) return rows.length > 0;
+
+  const row = rows[0];
+  const sequence = row.querySelector('[data-field="sequence_number"]').value.trim();
+  const timestamp = row.querySelector('[data-field="timestamp"]').value.trim();
+  const contentFields = [
+    'piece_name',
+    'raga_name',
+    'talam_name',
+    'composer_name',
+    'kind',
+  ];
+  return (
+    sequence !== '1'
+    || timestamp !== '0:00'
+    || contentFields.some(field => row.querySelector(`[data-field="${field}"]`).value.trim())
+  );
+}
+
+contribDescription.addEventListener('input', () => setPrefillStatus(''));
+
+prefillSetlistBtn.addEventListener('click', async () => {
+  const description = contribDescription.value.trim();
+  if (!description) {
+    setPrefillStatus('Paste a timestamped description or comment first.', 'err');
+    return;
+  }
+  if (
+    setlistHasUserEdits()
+    && !window.confirm('Replace the current setlist with entries parsed from this text?')
+  ) {
+    return;
+  }
+
+  prefillSetlistBtn.disabled = true;
+  setPrefillStatus('Parsing setlist…');
+
+  try {
+    const res = await fetch(`${API}/contributions/parse_setlist`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setPrefillStatus(data.error || 'Could not parse a setlist from this text.', 'err');
+      return;
+    }
+
+    contribSetlistEl.innerHTML = '';
+    data.setlist.forEach(item => addSetlistRow({
+      ...item,
+      timestamp: formatTimestamp(item.timestamp_seconds),
+    }));
+    setPrefillStatus(
+      `Prefilled ${data.setlist.length} setlist ${data.setlist.length === 1 ? 'item' : 'items'}. Review and edit them below.`,
+      'ok',
+    );
+  } catch {
+    setPrefillStatus('Could not reach the server. Is it running?', 'err');
+  } finally {
+    prefillSetlistBtn.disabled = false;
   }
 });
 
@@ -422,6 +596,7 @@ contributeForm.addEventListener('submit', async (e) => {
     contribSetlistEl.innerHTML = '';
     contribYoutubeHint.textContent = '';
     contribYoutubeHint.className = 'field-hint';
+    setPrefillStatus('');
     addArtistRow({ role: 'main artist' });
     addSetlistRow({ sequence_number: 1, timestamp: '0:00' });
   } catch {

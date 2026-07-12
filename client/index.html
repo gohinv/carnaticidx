@@ -115,23 +115,38 @@
               <label for="contrib-duration" class="search-label">Duration</label>
               <input id="contrib-duration" type="text" placeholder="h:mm:ss or seconds (optional)" />
             </div>
+            <div class="form-field form-field-full">
+              <label for="contrib-description" class="search-label">
+                YouTube description or timestamped comment
+              </label>
+              <textarea id="contrib-description" rows="7"
+                aria-describedby="contrib-description-help contrib-description-hint"
+                placeholder="Paste an optional description or comment containing the setlist and timestamps…"></textarea>
+              <p id="contrib-description-help" class="field-hint">
+                Prefilling replaces the current setlist. You can review, fix, and add pieces afterward.
+              </p>
+              <div class="setlist-prefill-actions">
+                <button type="button" class="btn-secondary" id="prefill-setlist-btn">Prefill setlist</button>
+                <p id="contrib-description-hint" class="field-hint" role="status" aria-live="polite"></p>
+              </div>
+            </div>
           </div>
         </section>
 
         <section class="form-section">
-          <div class="form-section-header">
-            <h3 class="form-section-title">Artists</h3>
+          <h3 class="form-section-title">Artists</h3>
+          <div id="contrib-artists" class="dynamic-list"></div>
+          <div class="dynamic-list-actions">
             <button type="button" class="btn-text" id="add-artist-btn">+ Add artist</button>
           </div>
-          <div id="contrib-artists" class="dynamic-list"></div>
         </section>
 
         <section class="form-section">
-          <div class="form-section-header">
-            <h3 class="form-section-title">Setlist</h3>
+          <h3 class="form-section-title">Setlist</h3>
+          <div id="contrib-setlist" class="dynamic-list"></div>
+          <div class="dynamic-list-actions">
             <button type="button" class="btn-text" id="add-setlist-btn">+ Add piece</button>
           </div>
-          <div id="contrib-setlist" class="dynamic-list"></div>
         </section>
 
         <div class="form-actions">

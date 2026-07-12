@@ -544,6 +544,7 @@ textarea::placeholder {
 
 .form-field input,
 .form-field select,
+.form-field textarea,
 .dynamic-row input,
 .dynamic-row select {
   width: 100%;
@@ -560,9 +561,16 @@ textarea::placeholder {
 
 .form-field input:focus,
 .form-field select:focus,
+.form-field textarea:focus,
 .dynamic-row input:focus,
 .dynamic-row select:focus {
   border-color: var(--accent-dim);
+}
+
+.form-field textarea {
+  resize: vertical;
+  min-height: 8rem;
+  line-height: 1.45;
 }
 
 .form-field select,
@@ -591,6 +599,10 @@ textarea::placeholder {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+}
+
+.dynamic-list-actions {
+  margin-top: 0.75rem;
 }
 
 .dynamic-row {
@@ -660,6 +672,40 @@ textarea::placeholder {
 
 .btn-text:hover { color: var(--link-hover); }
 
+.setlist-prefill-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.65rem;
+}
+
+.setlist-prefill-actions .field-hint {
+  margin-top: 0;
+}
+
+.btn-secondary {
+  flex: 0 0 auto;
+  padding: 0.55rem 0.8rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--link);
+  font-family: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.btn-secondary:hover {
+  border-color: var(--accent-dim);
+  color: var(--link-hover);
+}
+
+.btn-secondary:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .btn-remove {
   background: none;
   border: none;
@@ -723,5 +769,10 @@ textarea::placeholder {
 
   .dynamic-row-fields .span-2 {
     grid-column: auto;
+  }
+
+  .setlist-prefill-actions {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

@@ -1,9 +1,24 @@
 from math import pi
+import sys
+from pathlib import Path
+
 from flask import Flask, jsonify, render_template, request
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from dotenv import load_dotenv
 from sqlalchemy.orm import joinedload
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from ingest.populate_db import (  # noqa: E402
+    lookup_composer,
+    lookup_raga,
+    lookup_talam,
+    normalize_for_match,
+    parse_description,
+)
 
 load_dotenv()
 
@@ -187,6 +202,9 @@ class SetlistItemDraft(db.Model):
 
     # existing piece selected by user
     piece_id = db.Column(db.Integer, db.ForeignKey('pieces.id', ondelete='SET NULL'), nullable=True, index=True)
+    raga_id = db.Column(db.Integer, db.ForeignKey('ragas.id', ondelete='SET NULL'), nullable=True, index=True)
+    talam_id = db.Column(db.Integer, db.ForeignKey('talams.id', ondelete='SET NULL'), nullable=True, index=True)
+    composer_id = db.Column(db.Integer, db.ForeignKey('composers.id', ondelete='SET NULL'), nullable=True, index=True)
 
     # new piece data entered by user
     piece_name = db.Column(db.String(255), nullable=False)
@@ -200,6 +218,9 @@ class SetlistItemDraft(db.Model):
 
     concert_draft = db.relationship('ConcertDraft', back_populates='setlist_item_drafts')
     piece = db.relationship('Piece')
+    raga = db.relationship('Raga')
+    talam = db.relationship('Talam')
+    composer = db.relationship('Composer')
 
     __table_args__ = (
         db.UniqueConstraint('concert_draft_id', 'sequence_number', name='unique_concert_draft_sequence'),
@@ -248,6 +269,175 @@ class IngestDraft(db.Model):
 
 
 # CLIENT ENDPOINTS - WRITE
+
+_UNUSABLE_META_NAMES = {'unknown', 'none'}
+
+
+def _prefer_canonical_row(rows):
+    """Prefer title-cased / earlier rows when normalized duplicates exist."""
+    if not rows:
+        return None
+    if len(rows) == 1:
+        return rows[0]
+
+    def score(row):
+        name = row.name or ''
+        letters = [c for c in name if c.isalpha()]
+        upper = sum(1 for c in letters if c.isupper())
+        return (
+            1 if name[:1].isupper() else 0,
+            upper,
+            -len(name),
+            -row.id,
+        )
+
+    return sorted(rows, key=score, reverse=True)[0]
+
+
+def _usable_meta_name(name):
+    return bool(name) and normalize_for_match(name) not in _UNUSABLE_META_NAMES
+
+
+def _resolve_named_entity(model, raw_name, lookup_fn=None):
+    """Match a parsed name to an existing DB entity via aliases / normalization."""
+    if not raw_name:
+        return None, None
+
+    target = normalize_for_match(raw_name)
+    if not target:
+        return None, None
+
+    canon = lookup_fn(raw_name) if lookup_fn else None
+    if canon:
+        target = normalize_for_match(canon)
+
+    matches = []
+    suffix_matches = []
+    for row in db.session.scalars(db.select(model)).all():
+        if not _usable_meta_name(row.name):
+            continue
+        norm = normalize_for_match(row.name)
+        row_canon = lookup_fn(row.name) if lookup_fn else None
+        if norm == target or (canon and row_canon == canon):
+            matches.append(row)
+        elif norm.endswith(f' {target}'):
+            # e.g. parsed "ata" -> unique "Khanda Jati Ata"
+            suffix_matches.append(row)
+
+    row = _prefer_canonical_row(matches) or (
+        _prefer_canonical_row(suffix_matches) if len(suffix_matches) == 1 else None
+    )
+    if not row:
+        return None, raw_name
+    return row.id, row.name
+
+
+def _resolve_piece(piece_name, raga_id=None):
+    """Match a parsed piece name to an existing piece, preferring raga scope."""
+    if not piece_name:
+        return None
+
+    target = normalize_for_match(piece_name)
+    if not target:
+        return None
+
+    candidates = []
+    for piece in db.session.scalars(
+        db.select(Piece).options(
+            joinedload(Piece.raga),
+            joinedload(Piece.talam),
+            joinedload(Piece.composer),
+        )
+    ).unique().all():
+        if normalize_for_match(piece.name) == target:
+            candidates.append(piece)
+
+    if not candidates:
+        for alias in db.session.scalars(
+            db.select(PieceAlias).options(
+                joinedload(PieceAlias.piece).joinedload(Piece.raga),
+                joinedload(PieceAlias.piece).joinedload(Piece.talam),
+                joinedload(PieceAlias.piece).joinedload(Piece.composer),
+            )
+        ).unique().all():
+            if normalize_for_match(alias.alias) == target and alias.piece:
+                candidates.append(alias.piece)
+
+    if not candidates:
+        return None
+
+    if raga_id is not None:
+        scoped = [p for p in candidates if p.raga_id == raga_id]
+        if scoped:
+            candidates = scoped
+        else:
+            # Don't link a piece from a different raga when we already know the raga.
+            return None
+
+    if len(candidates) == 1:
+        return candidates[0]
+    return _prefer_canonical_row(candidates)
+
+
+@app.route('/contributions/parse_setlist', methods=['POST'])
+def parse_contribution_setlist():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Request body must be JSON"}), 400
+
+    description = data.get('description')
+    if not isinstance(description, str) or not description.strip():
+        return jsonify({"error": "description is required"}), 400
+    if len(description) > 100_000:
+        return jsonify({"error": "description is too long"}), 400
+
+    parsed_lines = parse_description(description)
+    setlist = []
+    for line in parsed_lines:
+        if line.timestamp_seconds is None or not line.piece_name:
+            continue
+
+        raga_id, raga_name = _resolve_named_entity(Raga, line.raga, lookup_raga)
+        talam_id, talam_name = _resolve_named_entity(Talam, line.talam, lookup_talam)
+        composer_id, composer_name = _resolve_named_entity(Composer, line.composer, lookup_composer)
+
+        piece = _resolve_piece(line.piece_name, raga_id=raga_id)
+        piece_id = piece.id if piece else None
+        piece_name = piece.name if piece else line.piece_name
+
+        # If the piece is linked, fill any still-unresolved metadata from it.
+        if piece:
+            if raga_id is None and piece.raga and _usable_meta_name(piece.raga.name):
+                raga_id = piece.raga_id
+                raga_name = piece.raga.name
+            if talam_id is None and piece.talam and _usable_meta_name(piece.talam.name):
+                talam_id = piece.talam_id
+                talam_name = piece.talam.name
+            if composer_id is None and piece.composer and _usable_meta_name(piece.composer.name):
+                composer_id = piece.composer_id
+                composer_name = piece.composer.name
+
+        setlist.append({
+            "sequence_number": len(setlist) + 1,
+            "timestamp_seconds": line.timestamp_seconds,
+            "piece_id": piece_id,
+            "piece_name": piece_name,
+            "raga_id": raga_id,
+            "raga_name": raga_name,
+            "talam_id": talam_id,
+            "talam_name": talam_name,
+            "composer_id": composer_id,
+            "composer_name": composer_name,
+            "kind": (line.kind or (piece.kind if piece else None) or '').lower() or None,
+        })
+
+    if not setlist:
+        return jsonify({
+            "error": "No setlist entries with both a timestamp and piece name were found"
+        }), 422
+
+    return jsonify({"setlist": setlist})
+
 
 @app.route('/contributions/create_concert_draft', methods=['POST'])
 def create_concert_draft():
@@ -310,6 +500,9 @@ def create_concert_draft():
             setlist_item_draft = SetlistItemDraft(
                 concert_draft_id=concert_draft.id,
                 piece_id=setlist_item.get('piece_id') or None,
+                raga_id=setlist_item.get('raga_id') or None,
+                talam_id=setlist_item.get('talam_id') or None,
+                composer_id=setlist_item.get('composer_id') or None,
                 piece_name=setlist_item.get('piece_name').strip(),
                 raga_name=setlist_item.get('raga_name'),
                 talam_name=setlist_item.get('talam_name'),
@@ -346,8 +539,11 @@ def autocomplete_pieces(prefix: str):
         {
             "id": p.id,
             "name": p.name,
+            "raga_id": p.raga_id,
             "raga": p.raga.name if p.raga else None,
+            "talam_id": p.talam_id,
             "talam": p.talam.name if p.talam else None,
+            "composer_id": p.composer_id,
             "composer": p.composer.name if p.composer else None,
         }
         for p in rows
@@ -385,6 +581,23 @@ def autocomplete_ragas(prefix: str):
             "name": r.name,
         }
         for r in rows
+    ])
+
+# Autocomplete Talam Names
+@app.route('/talams/autocomplete/<string:prefix>', methods=['GET'])
+def autocomplete_talams(prefix: str):
+    rows = db.session.scalars(
+        db.select(Talam)
+        .where(Talam.name.ilike(f"{prefix}%"))
+        .order_by(Talam.name)
+        .limit(10)
+    ).all()
+    return jsonify([
+        {
+            "id": t.id,
+            "name": t.name,
+        }
+        for t in rows
     ])
 
 # Autocomplete Composer Names
