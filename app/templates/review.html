@@ -10,9 +10,10 @@
 <body>
 
 <div id="topbar">
-  <h1>Carnatic Review</h1>
+  <h1>Admin Panel</h1>
   <div id="tabs">
     <div class="tab active" onclick="switchTab('drafts')">Drafts</div>
+    <div class="tab" onclick="switchTab('contributions')">Contributions</div>
     <div class="tab" onclick="switchTab('pieces')">Pieces</div>
     <div class="tab" onclick="switchTab('setlists')">Setlists</div>
   </div>
@@ -28,6 +29,11 @@
   <!-- Main: draft detail -->
   <div id="detail">
     <div class="empty"><span>📋</span>Select a draft from the list</div>
+  </div>
+
+  <!-- Main: contributed concert drafts -->
+  <div id="contributions-panel">
+    <div class="empty"><span>📝</span>Loading contributions…</div>
   </div>
 
   <!-- Main: pieces panel -->

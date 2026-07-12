@@ -12,6 +12,10 @@ let concertSearchTimer = null;
 let setlistConcertId = null;
 let setlistPieceTimers = {};
 let setlistSuggestionIdx = {};
+let concertDrafts = [];
+let concertDraftsTotal = 0;
+let expandedConcertDraftId = null;
+let concertDraftDetailCache = {};
 const KIND_OPTIONS = ['','krithi','varnam','padam','tillana','viruttam','slokam','mangalam','bhajan','rtp'];
 
 // ---- Init ----
@@ -71,12 +75,14 @@ async function refillDraftQueue() {
 function switchTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.tab').forEach((el, i) => {
-    el.classList.toggle('active', ['drafts','pieces','setlists'][i] === tab);
+    el.classList.toggle('active', ['drafts','contributions','pieces','setlists'][i] === tab);
   });
   document.getElementById('sidebar').style.display = tab === 'drafts' ? 'flex' : 'none';
   document.getElementById('detail').style.display = tab === 'drafts' ? 'block' : 'none';
+  document.getElementById('contributions-panel').style.display = tab === 'contributions' ? 'flex' : 'none';
   document.getElementById('pieces-panel').style.display = tab === 'pieces' ? 'flex' : 'none';
   document.getElementById('setlists-panel').style.display = tab === 'setlists' ? 'flex' : 'none';
+  if (tab === 'contributions') initContributionsPanel();
   if (tab === 'pieces') initPiecesPanel();
   if (tab === 'setlists') initSetlistsPanel();
   if (tab === 'drafts') updateDraftStats();
@@ -319,6 +325,222 @@ function nextDraft() {
 }
 function prevDraft() {
   if (currentIdx > 0) selectDraft(currentIdx - 1);
+}
+
+// ---- Contributions panel ----
+function initContributionsPanel() {
+  const panel = document.getElementById('contributions-panel');
+  if (!panel.dataset.ready) {
+    panel.innerHTML = `
+      <div class="panel-shell">
+        <div class="panel-search">
+          <div style="flex:1;color:#888;font-size:13px" id="contrib-stats">Loading…</div>
+          <button class="btn btn-sm btn-next" onclick="loadConcertDrafts()">Refresh</button>
+        </div>
+        <div id="contributions-list"></div>
+      </div>`;
+    panel.dataset.ready = '1';
+  }
+  loadConcertDrafts();
+}
+
+async function loadConcertDrafts() {
+  const list = document.getElementById('contributions-list');
+  const stats = document.getElementById('contrib-stats');
+  if (list) list.innerHTML = '<div class="contrib-loading">Loading submitted concerts…</div>';
+  if (stats) stats.textContent = 'Loading…';
+
+  try {
+    const res = await fetch('/review/concert-drafts?status=submitted&per_page=100');
+    const data = await res.json();
+    concertDrafts = data.items || [];
+    concertDraftsTotal = data.total || 0;
+    concertDraftDetailCache = {};
+    if (expandedConcertDraftId && !concertDrafts.some(d => d.id === expandedConcertDraftId)) {
+      expandedConcertDraftId = null;
+    }
+    updateContributionStats();
+    renderConcertDraftCards();
+  } catch {
+    if (list) list.innerHTML = '<div class="empty"><span>⚠️</span>Could not load contributions</div>';
+    if (stats) stats.textContent = 'Error loading';
+  }
+}
+
+function updateContributionStats() {
+  const el = document.getElementById('contrib-stats');
+  if (!el) return;
+  if (concertDraftsTotal === 0) {
+    el.textContent = 'No pending concert contributions';
+  } else {
+    el.textContent = `${concertDraftsTotal} pending concert contribution${concertDraftsTotal === 1 ? '' : 's'}`;
+  }
+  if (currentTab === 'contributions') {
+    const topStats = document.getElementById('stats');
+    if (topStats) topStats.textContent = el.textContent;
+  }
+}
+
+function renderConcertDraftCards() {
+  const list = document.getElementById('contributions-list');
+  if (!list) return;
+
+  if (!concertDrafts.length) {
+    list.innerHTML = '<div class="empty"><span>✅</span>No pending concert contributions</div>';
+    return;
+  }
+
+  list.innerHTML = concertDrafts.map(d => {
+    const expanded = d.id === expandedConcertDraftId;
+    const detail = concertDraftDetailCache[d.id];
+    return `
+      <div class="contrib-card${expanded ? ' expanded' : ''}" id="contrib-card-${d.id}">
+        <div class="contrib-card-header" onclick="toggleConcertDraft(${d.id})">
+          <div class="contrib-chevron">▶</div>
+          <div class="contrib-card-main">
+            <div class="contrib-card-title">${escHtml(d.title || d.youtube_id)}</div>
+            <div class="contrib-card-meta">
+              ${[d.year, d.venue, d.youtube_id].filter(Boolean).map(escHtml).join(' · ')}
+            </div>
+          </div>
+          <div class="contrib-card-counts">
+            <span class="contrib-count">${d.artist_count} artist${d.artist_count === 1 ? '' : 's'}</span>
+            <span class="contrib-count">${d.setlist_item_count} piece${d.setlist_item_count === 1 ? '' : 's'}</span>
+            ${d.duration_seconds != null ? `<span class="contrib-count">${fmtTs(d.duration_seconds)}</span>` : ''}
+          </div>
+        </div>
+        <div class="contrib-card-body" id="contrib-body-${d.id}">
+          ${expanded ? (detail ? renderConcertDraftDetail(detail) : '<div class="contrib-loading">Loading details…</div>') : ''}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function toggleConcertDraft(draftId) {
+  if (expandedConcertDraftId === draftId) {
+    expandedConcertDraftId = null;
+    renderConcertDraftCards();
+    return;
+  }
+
+  expandedConcertDraftId = draftId;
+  renderConcertDraftCards();
+
+  if (!concertDraftDetailCache[draftId]) {
+    try {
+      const res = await fetch(`/review/concert-drafts/${draftId}`);
+      if (!res.ok) throw new Error('failed');
+      concertDraftDetailCache[draftId] = await res.json();
+    } catch {
+      const body = document.getElementById(`contrib-body-${draftId}`);
+      if (body) body.innerHTML = '<div class="contrib-loading" style="color:#c06060">Failed to load draft details</div>';
+      return;
+    }
+  }
+
+  if (expandedConcertDraftId === draftId) {
+    renderConcertDraftCards();
+  }
+}
+
+function linkBadge(linked) {
+  return linked
+    ? '<span class="link-badge linked">linked</span>'
+    : '<span class="link-badge new">new</span>';
+}
+
+function renderConcertDraftDetail(d) {
+  const ytUrl = `https://www.youtube.com/watch?v=${escHtml(d.youtube_id)}`;
+  const metaItems = [
+    ['Title', d.title || '—'],
+    ['Year', d.year || '—'],
+    ['Venue', d.venue || '—'],
+    ['Duration', d.duration_seconds != null ? fmtTs(d.duration_seconds) : '—'],
+    ['YouTube', `<a class="concert-link" href="${ytUrl}" target="_blank" rel="noopener">${escHtml(d.youtube_id)}</a>`],
+    ['Status', d.status || '—'],
+  ].map(([key, val]) => `
+    <div class="contrib-meta-item">
+      <div class="meta-key">${key}</div>
+      <div class="meta-val">${val}</div>
+    </div>`).join('');
+
+  const artists = (d.artists || []).map(a => `
+    <div class="contrib-artist-row">
+      <div style="flex:1">
+        <strong>${escHtml(a.artist_name || a.submitted_artist_name || '—')}</strong>
+        ${linkBadge(!!a.artist_id)}
+        <div class="contrib-setlist-sub">
+          ${[a.role, a.instrument].filter(Boolean).map(escHtml).join(' · ') || '—'}
+        </div>
+      </div>
+    </div>`).join('');
+
+  const setlist = (d.setlist || []).map(item => {
+    const meta = [item.raga_name, item.talam_name, item.composer_name, item.kind]
+      .filter(Boolean).map(escHtml).join(' · ');
+    return `
+      <div class="contrib-setlist-row">
+        <span class="contrib-setlist-seq">${item.sequence_number}.</span>
+        <span class="contrib-setlist-ts">${fmtTs(item.timestamp_seconds)}</span>
+        <div class="contrib-setlist-main">
+          <div>
+            ${escHtml(item.piece_name || item.submitted_piece_name || '—')}
+            ${linkBadge(!!item.piece_id)}
+          </div>
+          ${meta ? `<div class="contrib-setlist-sub">${meta}</div>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="contrib-section-title" style="margin-top:0">Concert metadata</div>
+    <div class="contrib-meta-grid">${metaItems}</div>
+
+    <div class="contrib-section-title">Artists (${(d.artists || []).length})</div>
+    ${artists || '<div class="contrib-loading">No artists</div>'}
+
+    <div class="contrib-section-title">Setlist (${(d.setlist || []).length})</div>
+    ${setlist || '<div class="contrib-loading">No setlist items</div>'}
+
+    <div class="contrib-actions">
+      <button class="btn btn-resolve" onclick="event.stopPropagation(); approveConcertDraft(${d.id})">Approve → publish</button>
+      <button class="btn btn-reject" onclick="event.stopPropagation(); rejectConcertDraft(${d.id})">Reject</button>
+      <a class="btn btn-next" href="${ytUrl}" target="_blank" rel="noopener" onclick="event.stopPropagation()">▶ Watch</a>
+    </div>`;
+}
+
+async function approveConcertDraft(draftId) {
+  const draft = concertDrafts.find(d => d.id === draftId);
+  const label = draft?.title || `draft #${draftId}`;
+  if (!window.confirm(`Approve and publish “${label}”?`)) return;
+
+  const res = await fetch(`/review/concert-drafts/${draftId}/approve`, { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (res.ok) {
+    toast(`✓ Published concert #${data.concert?.id ?? '?'}`);
+    if (expandedConcertDraftId === draftId) expandedConcertDraftId = null;
+    delete concertDraftDetailCache[draftId];
+    await loadConcertDrafts();
+  } else {
+    toast(data.error || 'Approve failed', true);
+  }
+}
+
+async function rejectConcertDraft(draftId) {
+  const draft = concertDrafts.find(d => d.id === draftId);
+  const label = draft?.title || `draft #${draftId}`;
+  if (!window.confirm(`Reject “${label}”?`)) return;
+
+  const res = await fetch(`/review/concert-drafts/${draftId}/reject`, { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (res.ok) {
+    toast('Rejected');
+    if (expandedConcertDraftId === draftId) expandedConcertDraftId = null;
+    delete concertDraftDetailCache[draftId];
+    await loadConcertDrafts();
+  } else {
+    toast(data.error || 'Reject failed', true);
+  }
 }
 
 // ---- Pieces panel ----

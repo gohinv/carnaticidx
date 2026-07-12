@@ -16,6 +16,10 @@ PATCH /review/pieces/<id>           → edit name/raga/composer/talam/kind
 GET  /review/concerts/search        → concert search (?q=&limit=)
 GET  /review/concerts/<id>/setlist  → editable setlist for a concert
 PATCH /review/setlist/<id>          → edit piece/timestamp/sequence
+GET  /review/concert-drafts         → paginated contributed concert drafts
+GET  /review/concert-drafts/<id>    → contributed concert draft detail
+POST /review/concert-drafts/<id>/approve → publish a contributed concert
+POST /review/concert-drafts/<id>/reject  → reject a contributed concert
 GET  /review/lookup/ragas           → all raga names
 GET  /review/lookup/composers       → all composer names
 GET  /review/lookup/talams          → all talam names
@@ -53,6 +57,19 @@ def _models():
         Piece, PieceAlias, SetlistItem, IngestDraft,
     )
     return db, Concert, Artist, Raga, Talam, Composer, Piece, PieceAlias, SetlistItem, IngestDraft
+
+
+def _contribution_models():
+    from app import (
+        db, Concert, Artist, Raga, Talam, Composer, Piece,
+        ConcertArtist, SetlistItem,
+        ConcertDraft, ConcertArtistDraft, SetlistItemDraft,
+    )
+    return (
+        db, Concert, Artist, Raga, Talam, Composer, Piece,
+        ConcertArtist, SetlistItem,
+        ConcertDraft, ConcertArtistDraft, SetlistItemDraft,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +128,60 @@ def _concert_summary(c) -> dict:
         "duration_seconds": c.duration_seconds,
         "url": f"https://www.youtube.com/watch?v={c.youtube_id}",
     }
+
+
+def _concert_draft_summary(draft) -> dict:
+    return {
+        "id": draft.id,
+        "youtube_id": draft.youtube_id,
+        "title": draft.title,
+        "year": draft.year,
+        "venue": draft.venue,
+        "duration_seconds": draft.duration_seconds,
+        "status": draft.status,
+        "artist_count": len(draft.concert_artist_drafts),
+        "setlist_item_count": len(draft.setlist_item_drafts),
+    }
+
+
+def _concert_draft_detail(draft) -> dict:
+    result = _concert_draft_summary(draft)
+    result["artists"] = [
+        {
+            "id": artist_draft.id,
+            "artist_id": artist_draft.artist_id,
+            "artist_name": (
+                artist_draft.artist.name
+                if artist_draft.artist
+                else artist_draft.artist_name
+            ),
+            "submitted_artist_name": artist_draft.artist_name,
+            "instrument": artist_draft.instrument,
+            "role": artist_draft.role,
+        }
+        for artist_draft in draft.concert_artist_drafts
+    ]
+    result["setlist"] = [
+        {
+            "id": item.id,
+            "piece_id": item.piece_id,
+            "piece_name": item.piece.name if item.piece else item.piece_name,
+            "submitted_piece_name": item.piece_name,
+            "raga_id": item.raga_id,
+            "raga_name": item.raga.name if item.raga else item.raga_name,
+            "talam_id": item.talam_id,
+            "talam_name": item.talam.name if item.talam else item.talam_name,
+            "composer_id": item.composer_id,
+            "composer_name": (
+                item.composer.name if item.composer else item.composer_name
+            ),
+            "kind": item.piece.kind if item.piece else item.kind,
+            "timestamp_seconds": item.timestamp_seconds,
+            "sequence_number": item.sequence_number,
+        }
+        for item in draft.setlist_item_drafts
+    ]
+    return result
 
 
 def _fmt_ts(seconds: int | None) -> str:
@@ -356,6 +427,171 @@ def reject_draft(draft_id: int):
     draft.status = "rejected"
     db.session.commit()
     return jsonify({"draft_id": draft_id, "status": "rejected"})
+
+
+# ---------------------------------------------------------------------------
+# Contributed concert draft endpoints
+# ---------------------------------------------------------------------------
+
+@review_bp.route("/concert-drafts")
+def list_concert_drafts():
+    db, *_, ConcertDraft, ConcertArtistDraft, SetlistItemDraft = _contribution_models()
+    status = request.args.get("status", "submitted").strip()
+
+    try:
+        page = max(int(request.args.get("page", 1)), 1)
+        per_page = min(max(int(request.args.get("per_page", 30)), 1), 100)
+    except (TypeError, ValueError):
+        return jsonify({"error": "page and per_page must be integers"}), 400
+
+    query = db.session.query(ConcertDraft)
+    if status != "all":
+        query = query.filter(ConcertDraft.status == status)
+    query = query.order_by(ConcertDraft.id)
+
+    total = query.count()
+    drafts = query.offset((page - 1) * per_page).limit(per_page).all()
+    return jsonify({
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "items": [_concert_draft_summary(draft) for draft in drafts],
+    })
+
+
+@review_bp.route("/concert-drafts/<int:draft_id>")
+def get_concert_draft(draft_id: int):
+    db, *_, ConcertDraft, ConcertArtistDraft, SetlistItemDraft = _contribution_models()
+    draft = db.session.get(ConcertDraft, draft_id)
+    if not draft:
+        abort(404)
+    return jsonify(_concert_draft_detail(draft))
+
+
+@review_bp.route("/concert-drafts/<int:draft_id>/approve", methods=["POST"])
+def approve_concert_draft(draft_id: int):
+    (
+        db, Concert, Artist, Raga, Talam, Composer, Piece,
+        ConcertArtist, SetlistItem,
+        ConcertDraft, ConcertArtistDraft, SetlistItemDraft,
+    ) = _contribution_models()
+
+    draft = db.session.get(ConcertDraft, draft_id)
+    if not draft:
+        abort(404)
+    if draft.status != "submitted":
+        return jsonify({
+            "error": f"Only submitted drafts can be approved; status is {draft.status!r}",
+        }), 409
+
+    existing_concert = db.session.query(Concert).filter_by(
+        youtube_id=draft.youtube_id
+    ).first()
+    if existing_concert:
+        return jsonify({
+            "error": "A concert with this YouTube ID already exists",
+            "concert_id": existing_concert.id,
+        }), 409
+
+    if not draft.concert_artist_drafts:
+        return jsonify({"error": "Draft has no artists"}), 422
+    if not draft.setlist_item_drafts:
+        return jsonify({"error": "Draft has no setlist items"}), 422
+
+    try:
+        concert = Concert(
+            youtube_id=draft.youtube_id,
+            title=draft.title,
+            year=draft.year,
+            venue=draft.venue,
+            duration_seconds=draft.duration_seconds,
+        )
+        db.session.add(concert)
+        db.session.flush()
+
+        for artist_draft in draft.concert_artist_drafts:
+            artist = _promote_named_draft_reference(
+                db.session,
+                Artist,
+                artist_draft.artist_id,
+                artist_draft.artist_name,
+                "artist",
+                required=True,
+            )
+            artist_draft.artist_id = artist.id
+            db.session.add(ConcertArtist(
+                concert_id=concert.id,
+                artist_id=artist.id,
+                instrument=artist_draft.instrument,
+                role=artist_draft.role,
+            ))
+
+        for item_draft in draft.setlist_item_drafts:
+            piece = db.session.get(Piece, item_draft.piece_id) if item_draft.piece_id else None
+            if item_draft.piece_id and not piece:
+                raise ValueError(
+                    f"setlist item {item_draft.id}: piece_id "
+                    f"{item_draft.piece_id} does not exist"
+                )
+
+            if not piece:
+                raga = _promote_named_draft_reference(
+                    db.session, Raga, item_draft.raga_id,
+                    item_draft.raga_name, "raga",
+                )
+                talam = _promote_named_draft_reference(
+                    db.session, Talam, item_draft.talam_id,
+                    item_draft.talam_name, "talam",
+                )
+                composer = _promote_named_draft_reference(
+                    db.session, Composer, item_draft.composer_id,
+                    item_draft.composer_name, "composer",
+                )
+                piece = _promote_draft_piece(
+                    db.session, Piece, item_draft,
+                    raga_id=raga.id if raga else None,
+                    talam_id=talam.id if talam else None,
+                    composer_id=composer.id if composer else None,
+                )
+                item_draft.piece_id = piece.id
+                item_draft.raga_id = raga.id if raga else None
+                item_draft.talam_id = talam.id if talam else None
+                item_draft.composer_id = composer.id if composer else None
+
+            db.session.add(SetlistItem(
+                concert_id=concert.id,
+                piece_id=piece.id,
+                timestamp_seconds=item_draft.timestamp_seconds,
+                sequence_number=item_draft.sequence_number,
+            ))
+
+        draft.status = "approved"
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 400
+
+    return jsonify({
+        "draft_id": draft.id,
+        "status": draft.status,
+        "concert": _concert_summary(concert),
+    }), 201
+
+
+@review_bp.route("/concert-drafts/<int:draft_id>/reject", methods=["POST"])
+def reject_concert_draft(draft_id: int):
+    db, *_, ConcertDraft, ConcertArtistDraft, SetlistItemDraft = _contribution_models()
+    draft = db.session.get(ConcertDraft, draft_id)
+    if not draft:
+        abort(404)
+    if draft.status != "submitted":
+        return jsonify({
+            "error": f"Only submitted drafts can be rejected; status is {draft.status!r}",
+        }), 409
+
+    draft.status = "rejected"
+    db.session.commit()
+    return jsonify({"draft_id": draft.id, "status": draft.status})
 
 
 # ---------------------------------------------------------------------------
@@ -637,6 +873,86 @@ def _get_or_create(session, model, **kwargs):
     session.add(row)
     session.flush()
     return row, True
+
+
+def _promote_named_draft_reference(
+    session,
+    model,
+    entity_id,
+    submitted_name,
+    label,
+    *,
+    required=False,
+):
+    """Reuse a selected catalog row, or create the contributor's new named row."""
+    if entity_id:
+        row = session.get(model, entity_id)
+        if not row:
+            raise ValueError(f"{label}_id {entity_id} does not exist")
+        return row
+
+    name = (submitted_name or "").strip()
+    if not name:
+        if required:
+            raise ValueError(f"{label} name is required")
+        return None
+
+    from sqlalchemy import func
+    row = (
+        session.query(model)
+        .filter(func.lower(model.name) == name.lower())
+        .order_by(model.id)
+        .first()
+    )
+    if row:
+        return row
+
+    row = model(name=name)
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _promote_draft_piece(
+    session,
+    Piece,
+    item_draft,
+    *,
+    raga_id,
+    talam_id,
+    composer_id,
+):
+    """Create a new contributed piece, reusing an exact catalog match if present."""
+    name = (item_draft.piece_name or "").strip()
+    if not name:
+        raise ValueError(f"setlist item {item_draft.id}: piece name is required")
+
+    from sqlalchemy import func
+    query = session.query(Piece).filter(
+        func.lower(Piece.name) == name.lower(),
+        Piece.raga_id == raga_id,
+        Piece.talam_id == talam_id,
+        Piece.composer_id == composer_id,
+    )
+    if item_draft.kind:
+        query = query.filter(func.lower(Piece.kind) == item_draft.kind.lower())
+    else:
+        query = query.filter(Piece.kind.is_(None))
+
+    piece = query.order_by(Piece.id).first()
+    if piece:
+        return piece
+
+    piece = Piece(
+        name=name,
+        kind=item_draft.kind,
+        raga_id=raga_id,
+        talam_id=talam_id,
+        composer_id=composer_id,
+    )
+    session.add(piece)
+    session.flush()
+    return piece
 
 
 def _normalize(text: str) -> str:

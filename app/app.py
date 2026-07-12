@@ -28,6 +28,8 @@ app = Flask(
     static_folder='../client',
     static_url_path='',
 )
+app.config['TEMPLATES_AUTO_RELOAD'] = True
+app.jinja_env.auto_reload = True
 
 app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://gohitha@localhost/carnaticidx'
 
