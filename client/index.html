@@ -94,14 +94,14 @@
           <h3 class="form-section-title">Concert</h3>
           <div class="form-grid">
             <div class="form-field form-field-full">
-              <label for="contrib-youtube" class="search-label">YouTube URL or ID</label>
+              <label for="contrib-youtube" class="search-label">YouTube URL</label>
               <input id="contrib-youtube" type="text" required spellcheck="false"
-                placeholder="https://www.youtube.com/watch?v=… or video id" />
+                placeholder="https://www.youtube.com/watch?v=..." />
               <p id="contrib-youtube-hint" class="field-hint"></p>
             </div>
             <div class="form-field form-field-full">
               <label for="contrib-title" class="search-label">Title</label>
-              <input id="contrib-title" type="text" required placeholder="Concert title" />
+              <input id="contrib-title" type="text" required placeholder="Concert title..." />
             </div>
             <div class="form-field">
               <label for="contrib-year" class="search-label">Year</label>
@@ -113,17 +113,17 @@
             </div>
             <div class="form-field">
               <label for="contrib-duration" class="search-label">Duration</label>
-              <input id="contrib-duration" type="text" placeholder="h:mm:ss or seconds (optional)" />
+              <input id="contrib-duration" type="text" placeholder="h:mm:ss or seconds" />
             </div>
             <div class="form-field form-field-full">
               <label for="contrib-description" class="search-label">
-                YouTube description or timestamped comment
+                Description or comment with the list of pieces and timestamps
               </label>
               <textarea id="contrib-description" rows="7"
                 aria-describedby="contrib-description-help contrib-description-hint"
-                placeholder="Paste an optional description or comment containing the setlist and timestamps…"></textarea>
+                placeholder="Paste timestamps here..."></textarea>
               <p id="contrib-description-help" class="field-hint">
-                Prefilling replaces the current setlist. You can review, fix, and add pieces afterward.
+                Please take a moment to fix the parsed piece list and timestamps as needed.
               </p>
               <div class="setlist-prefill-actions">
                 <button type="button" class="btn-secondary" id="prefill-setlist-btn">Prefill setlist</button>
@@ -142,7 +142,7 @@
         </section>
 
         <section class="form-section">
-          <h3 class="form-section-title">Setlist</h3>
+          <h3 class="form-section-title">List of pieces</h3>
           <div id="contrib-setlist" class="dynamic-list"></div>
           <div class="dynamic-list-actions">
             <button type="button" class="btn-text" id="add-setlist-btn">+ Add piece</button>

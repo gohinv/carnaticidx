@@ -573,6 +573,11 @@ textarea::placeholder {
   line-height: 1.45;
 }
 
+#contrib-description {
+  resize: none;
+  overflow-y: hidden;
+}
+
 .form-field select,
 .dynamic-row select {
   cursor: pointer;

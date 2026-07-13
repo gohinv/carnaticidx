@@ -78,6 +78,11 @@ function setContribStatus(msg, kind = '') {
   contribStatus.className = 'form-status' + (kind ? ` ${kind}` : '');
 }
 
+function autoResizeDescriptionTextarea() {
+  contribDescription.style.height = 'auto';
+  contribDescription.style.height = `${contribDescription.scrollHeight}px`;
+}
+
 function setPrefillStatus(msg, kind = '') {
   contribDescriptionHint.textContent = msg || '';
   contribDescriptionHint.className = 'field-hint' + (kind ? ` ${kind}` : '');
@@ -461,7 +466,13 @@ function setlistHasUserEdits() {
   );
 }
 
-contribDescription.addEventListener('input', () => setPrefillStatus(''));
+contribDescription.addEventListener('input', () => {
+  setPrefillStatus('');
+  autoResizeDescriptionTextarea();
+});
+contribDescription.addEventListener('paste', () => {
+  requestAnimationFrame(autoResizeDescriptionTextarea);
+});
 
 prefillSetlistBtn.addEventListener('click', async () => {
   const description = contribDescription.value.trim();
@@ -597,6 +608,7 @@ contributeForm.addEventListener('submit', async (e) => {
     contribYoutubeHint.textContent = '';
     contribYoutubeHint.className = 'field-hint';
     setPrefillStatus('');
+    autoResizeDescriptionTextarea();
     addArtistRow({ role: 'main artist' });
     addSetlistRow({ sequence_number: 1, timestamp: '0:00' });
   } catch {
@@ -609,3 +621,4 @@ contributeForm.addEventListener('submit', async (e) => {
 // start form with one artist and piece
 addArtistRow({ role: 'main artist' });
 addSetlistRow({ sequence_number: 1, timestamp: '0:00' });
+autoResizeDescriptionTextarea();
