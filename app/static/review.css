@@ -228,3 +228,11 @@
     border-top: 1px solid #1e1e1e;
   }
   .contrib-loading { color: #555; font-size: 12px; padding: 8px 0; }
+  .contrib-card-body .setlist-edit-row {
+    background: #121212;
+    border: 1px solid #1e1e1e;
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+  }
+  .contrib-card-body .setlist-edit-row:last-child { margin-bottom: 0; }

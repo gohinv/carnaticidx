@@ -476,18 +476,35 @@ function renderConcertDraftDetail(d) {
     </div>`).join('');
 
   const setlist = (d.setlist || []).map(item => {
-    const meta = [item.raga_name, item.talam_name, item.composer_name, item.kind]
-      .filter(Boolean).map(escHtml).join(' · ');
+    const pieceName = item.piece_name || item.submitted_piece_name || '';
+    const pieceSub = item.piece_id
+      ? [item.raga_name, item.composer_name, item.talam_name, item.kind].filter(Boolean).join(' · ') || 'Linked piece'
+      : ([item.raga_name, item.composer_name, item.talam_name, item.kind].filter(Boolean).join(' · ') || 'New piece (will be created on approve)');
     return `
-      <div class="contrib-setlist-row">
-        <span class="contrib-setlist-seq">${item.sequence_number}.</span>
-        <span class="contrib-setlist-ts">${fmtTs(item.timestamp_seconds)}</span>
-        <div class="contrib-setlist-main">
-          <div>
-            ${escHtml(item.piece_name || item.submitted_piece_name || '—')}
-            ${linkBadge(!!item.piece_id)}
-          </div>
-          ${meta ? `<div class="contrib-setlist-sub">${meta}</div>` : ''}
+      <div class="setlist-edit-row" id="sid-row-${item.id}" data-piece-id="${item.piece_id || ''}" data-concert-draft-id="${d.id}" onclick="event.stopPropagation()">
+        <div>
+          <div class="label" style="margin-bottom:3px">Seq</div>
+          <input id="sid-seq-${item.id}" type="number" min="1" value="${item.sequence_number}"
+            oninput="markDraftSetlistDirty(${item.id})">
+        </div>
+        <div>
+          <div class="label" style="margin-bottom:3px">Time</div>
+          <input id="sid-ts-${item.id}" value="${fmtTs(item.timestamp_seconds)}"
+            placeholder="m:ss" oninput="markDraftSetlistDirty(${item.id})">
+        </div>
+        <div class="setlist-piece-wrap">
+          <div class="label" style="margin-bottom:3px">Piece ${linkBadge(!!item.piece_id)}</div>
+          <input id="sid-piece-${item.id}" value="${escHtml(pieceName)}"
+            placeholder="Search piece or type new name…" autocomplete="off"
+            oninput="onDraftSetlistPieceSearch(${item.id}, this.value)"
+            onkeydown="onSetlistPieceKey(event, ${item.id}, 'sid')">
+          <div class="setlist-piece-sub" id="sid-piece-sub-${item.id}">${escHtml(pieceSub)}</div>
+          <div id="sid-sugg-${item.id}" style="display:none"></div>
+        </div>
+        <div style="padding-top:18px;display:flex;flex-direction:column;gap:4px">
+          <button class="btn btn-sm btn-save" onclick="saveDraftSetlistItem(${item.id})">Save</button>
+          <button class="btn btn-sm btn-skip" onclick="unlinkDraftSetlistPiece(${item.id})">Unlink</button>
+          ${d.youtube_id ? `<a class="btn btn-sm btn-next" style="text-align:center" href="https://youtu.be/${escHtml(d.youtube_id)}?t=${item.timestamp_seconds||0}" target="_blank" rel="noopener">▶</a>` : ''}
         </div>
       </div>`;
   }).join('');
@@ -499,7 +516,7 @@ function renderConcertDraftDetail(d) {
     <div class="contrib-section-title">Artists (${(d.artists || []).length})</div>
     ${artists || '<div class="contrib-loading">No artists</div>'}
 
-    <div class="contrib-section-title">Setlist (${(d.setlist || []).length})</div>
+    <div class="contrib-section-title">Setlist (${(d.setlist || []).length}) — edit before approving</div>
     ${setlist || '<div class="contrib-loading">No setlist items</div>'}
 
     <div class="contrib-actions">
@@ -507,6 +524,102 @@ function renderConcertDraftDetail(d) {
       <button class="btn btn-reject" onclick="event.stopPropagation(); rejectConcertDraft(${d.id})">Reject</button>
       <a class="btn btn-next" href="${ytUrl}" target="_blank" rel="noopener" onclick="event.stopPropagation()">▶ Watch</a>
     </div>`;
+}
+
+function markDraftSetlistDirty(itemId) {
+  document.getElementById(`sid-row-${itemId}`)?.classList.add('dirty');
+}
+
+async function onDraftSetlistPieceSearch(itemId, q) {
+  const row = document.getElementById(`sid-row-${itemId}`);
+  if (row) row.dataset.pieceId = '';
+  markDraftSetlistDirty(itemId);
+  const subEl = document.getElementById(`sid-piece-sub-${itemId}`);
+  if (subEl) subEl.textContent = q.trim() ? 'New piece (will be created on approve)' : 'No piece linked';
+  clearTimeout(setlistPieceTimers[`sid-${itemId}`]);
+  if (!q || q.length < 2) {
+    hideSetlistSuggestions(itemId, 'sid');
+    return;
+  }
+  setlistPieceTimers[`sid-${itemId}`] = setTimeout(async () => {
+    const res = await fetch(`/review/pieces/search?q=${encodeURIComponent(q)}&limit=8`);
+    const items = await res.json();
+    showSetlistSuggestions(itemId, items, 'sid');
+  }, 180);
+}
+
+async function unlinkDraftSetlistPiece(itemId) {
+  const row = document.getElementById(`sid-row-${itemId}`);
+  const input = document.getElementById(`sid-piece-${itemId}`);
+  const subEl = document.getElementById(`sid-piece-sub-${itemId}`);
+  if (row) row.dataset.pieceId = '';
+  // Keep typed name if present so approve can still create the piece
+  if (subEl) {
+    subEl.textContent = input?.value?.trim()
+      ? 'New piece (will be created on approve)'
+      : 'No piece linked';
+  }
+  markDraftSetlistDirty(itemId);
+  await saveDraftSetlistItem(itemId, true);
+}
+
+async function saveDraftSetlistItem(itemId, unlinking=false) {
+  const row = document.getElementById(`sid-row-${itemId}`);
+  const seq = parseInt(document.getElementById(`sid-seq-${itemId}`)?.value, 10);
+  const ts = parseTimestamp(document.getElementById(`sid-ts-${itemId}`)?.value);
+  const pieceInput = document.getElementById(`sid-piece-${itemId}`)?.value?.trim() || '';
+  if (Number.isNaN(seq) || seq < 1) { toast('Invalid sequence number', true); return; }
+  if (ts === null) { toast('Invalid timestamp (use seconds or m:ss)', true); return; }
+  if (!pieceInput) { toast('Piece name is required', true); return; }
+
+  const body = {
+    sequence_number: seq,
+    timestamp_seconds: ts,
+    piece_name: pieceInput,
+  };
+
+  if (unlinking || !row?.dataset.pieceId) {
+    body.piece_id = null;
+  } else {
+    body.piece_id = parseInt(row.dataset.pieceId, 10);
+  }
+
+  const res = await fetch(`/review/setlist-drafts/${itemId}`, {
+    method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body),
+  });
+  if (res.ok) {
+    toast('✓ Draft setlist item saved');
+    row?.classList.remove('dirty');
+    const concertDraftId = row?.dataset.concertDraftId
+      ? parseInt(row.dataset.concertDraftId, 10)
+      : expandedConcertDraftId;
+    if (concertDraftId) await refreshConcertDraftDetail(concertDraftId);
+  } else {
+    const err = await res.json().catch(() => ({}));
+    toast(err.error || 'Save failed', true);
+  }
+}
+
+async function refreshConcertDraftDetail(draftId) {
+  try {
+    const res = await fetch(`/review/concert-drafts/${draftId}`);
+    if (!res.ok) throw new Error('failed');
+    concertDraftDetailCache[draftId] = await res.json();
+    // Keep summary counts in sync
+    const summary = concertDrafts.find(d => d.id === draftId);
+    const detail = concertDraftDetailCache[draftId];
+    if (summary && detail) {
+      summary.artist_count = (detail.artists || []).length;
+      summary.setlist_item_count = (detail.setlist || []).length;
+      summary.title = detail.title;
+      summary.year = detail.year;
+      summary.venue = detail.venue;
+      summary.duration_seconds = detail.duration_seconds;
+    }
+    if (expandedConcertDraftId === draftId) renderConcertDraftCards();
+  } catch {
+    toast('Saved, but failed to refresh draft view', true);
+  }
 }
 
 async function approveConcertDraft(draftId) {
@@ -867,17 +980,17 @@ async function onSetlistPieceSearch(itemId, q) {
   }, 180);
 }
 
-function showSetlistSuggestions(itemId, items) {
-  const box = document.getElementById(`si-sugg-${itemId}`);
+function showSetlistSuggestions(itemId, items, prefix='si') {
+  const box = document.getElementById(`${prefix}-sugg-${itemId}`);
   if (!box) return;
   if (!items.length) { box.style.display = 'none'; return; }
-  setlistSuggestionIdx[itemId] = -1;
+  setlistSuggestionIdx[`${prefix}-${itemId}`] = -1;
   box.style.cssText = 'position:absolute;left:0;right:0;top:100%;background:#1e1e1e;border:1px solid #2e2e2e;border-radius:0 0 6px 6px;z-index:10;max-height:180px;overflow-y:auto;';
   box.innerHTML = items.map((p, i) => {
     const sub = [p.raga, p.composer, p.talam].filter(Boolean).join(' · ');
     return `<div class="suggestion" data-id="${p.id}" data-name="${escHtml(p.name)}" data-sub="${escHtml(sub)}"
-         onmousedown="pickSetlistPieceFromEl(${itemId}, this)"
-         onmouseover="setlistSuggestionIdx[${itemId}]=${i}">
+         onmousedown="pickSetlistPieceFromEl(${itemId}, this, '${prefix}')"
+         onmouseover="setlistSuggestionIdx['${prefix}-${itemId}']=${i}">
       <div>${escHtml(p.name)}</div>
       <div class="suggestion-sub">${escHtml(sub)}</div>
     </div>`;
@@ -885,43 +998,45 @@ function showSetlistSuggestions(itemId, items) {
   box.style.display = 'block';
 }
 
-function hideSetlistSuggestions(itemId) {
-  const box = document.getElementById(`si-sugg-${itemId}`);
-  if (box) { box.style.display = 'none'; setlistSuggestionIdx[itemId] = -1; }
+function hideSetlistSuggestions(itemId, prefix='si') {
+  const box = document.getElementById(`${prefix}-sugg-${itemId}`);
+  if (box) { box.style.display = 'none'; setlistSuggestionIdx[`${prefix}-${itemId}`] = -1; }
 }
 
-function onSetlistPieceKey(e, itemId) {
-  const box = document.getElementById(`si-sugg-${itemId}`);
+function onSetlistPieceKey(e, itemId, prefix='si') {
+  const box = document.getElementById(`${prefix}-sugg-${itemId}`);
   const items = box ? box.querySelectorAll('.suggestion') : [];
-  let idx = setlistSuggestionIdx[itemId] ?? -1;
+  const key = `${prefix}-${itemId}`;
+  let idx = setlistSuggestionIdx[key] ?? -1;
   if (e.key === 'ArrowDown') {
-    e.preventDefault(); idx = Math.min(idx + 1, items.length - 1); setlistSuggestionIdx[itemId] = idx;
+    e.preventDefault(); idx = Math.min(idx + 1, items.length - 1); setlistSuggestionIdx[key] = idx;
     items.forEach((el, i) => el.classList.toggle('active', i === idx));
   } else if (e.key === 'ArrowUp') {
-    e.preventDefault(); idx = Math.max(idx - 1, -1); setlistSuggestionIdx[itemId] = idx;
+    e.preventDefault(); idx = Math.max(idx - 1, -1); setlistSuggestionIdx[key] = idx;
     items.forEach((el, i) => el.classList.toggle('active', i === idx));
   } else if (e.key === 'Enter' && idx >= 0) {
     e.preventDefault();
     const el = items[idx];
-    if (el) pickSetlistPieceFromEl(itemId, el);
+    if (el) pickSetlistPieceFromEl(itemId, el, prefix);
   } else if (e.key === 'Escape') {
-    hideSetlistSuggestions(itemId);
+    hideSetlistSuggestions(itemId, prefix);
   }
 }
 
-function pickSetlistPieceFromEl(itemId, el) {
-  pickSetlistPiece(itemId, +el.dataset.id, el.dataset.name, el.dataset.sub || '');
+function pickSetlistPieceFromEl(itemId, el, prefix='si') {
+  pickSetlistPiece(itemId, +el.dataset.id, el.dataset.name, el.dataset.sub || '', prefix);
 }
 
-function pickSetlistPiece(itemId, pieceId, name, sub) {
-  const row = document.getElementById(`si-row-${itemId}`);
-  const input = document.getElementById(`si-piece-${itemId}`);
-  const subEl = document.getElementById(`si-piece-sub-${itemId}`);
+function pickSetlistPiece(itemId, pieceId, name, sub, prefix='si') {
+  const row = document.getElementById(`${prefix}-row-${itemId}`);
+  const input = document.getElementById(`${prefix}-piece-${itemId}`);
+  const subEl = document.getElementById(`${prefix}-piece-sub-${itemId}`);
   if (row) row.dataset.pieceId = String(pieceId);
   if (input) input.value = name;
   if (subEl) subEl.textContent = sub || 'Selected piece';
-  hideSetlistSuggestions(itemId);
-  markSetlistDirty(itemId);
+  hideSetlistSuggestions(itemId, prefix);
+  if (prefix === 'sid') markDraftSetlistDirty(itemId);
+  else markSetlistDirty(itemId);
 }
 
 async function unlinkSetlistPiece(itemId) {

@@ -20,6 +20,7 @@ GET  /review/concert-drafts         → paginated contributed concert drafts
 GET  /review/concert-drafts/<id>    → contributed concert draft detail
 POST /review/concert-drafts/<id>/approve → publish a contributed concert
 POST /review/concert-drafts/<id>/reject  → reject a contributed concert
+PATCH /review/setlist-drafts/<id>   → edit draft setlist piece/timestamp/sequence
 GET  /review/lookup/ragas           → all raga names
 GET  /review/lookup/composers       → all composer names
 GET  /review/lookup/talams          → all talam names
@@ -162,26 +163,31 @@ def _concert_draft_detail(draft) -> dict:
         for artist_draft in draft.concert_artist_drafts
     ]
     result["setlist"] = [
-        {
-            "id": item.id,
-            "piece_id": item.piece_id,
-            "piece_name": item.piece.name if item.piece else item.piece_name,
-            "submitted_piece_name": item.piece_name,
-            "raga_id": item.raga_id,
-            "raga_name": item.raga.name if item.raga else item.raga_name,
-            "talam_id": item.talam_id,
-            "talam_name": item.talam.name if item.talam else item.talam_name,
-            "composer_id": item.composer_id,
-            "composer_name": (
-                item.composer.name if item.composer else item.composer_name
-            ),
-            "kind": item.piece.kind if item.piece else item.kind,
-            "timestamp_seconds": item.timestamp_seconds,
-            "sequence_number": item.sequence_number,
-        }
+        _setlist_item_draft_summary(item)
         for item in draft.setlist_item_drafts
     ]
     return result
+
+
+def _setlist_item_draft_summary(item) -> dict:
+    return {
+        "id": item.id,
+        "concert_draft_id": item.concert_draft_id,
+        "piece_id": item.piece_id,
+        "piece_name": item.piece.name if item.piece else item.piece_name,
+        "submitted_piece_name": item.piece_name,
+        "raga_id": item.raga_id,
+        "raga_name": item.raga.name if item.raga else item.raga_name,
+        "talam_id": item.talam_id,
+        "talam_name": item.talam.name if item.talam else item.talam_name,
+        "composer_id": item.composer_id,
+        "composer_name": (
+            item.composer.name if item.composer else item.composer_name
+        ),
+        "kind": item.piece.kind if item.piece else item.kind,
+        "timestamp_seconds": item.timestamp_seconds,
+        "sequence_number": item.sequence_number,
+    }
 
 
 def _fmt_ts(seconds: int | None) -> str:
@@ -592,6 +598,107 @@ def reject_concert_draft(draft_id: int):
     draft.status = "rejected"
     db.session.commit()
     return jsonify({"draft_id": draft.id, "status": draft.status})
+
+
+@review_bp.route("/setlist-drafts/<int:item_id>", methods=["PATCH"])
+def patch_setlist_item_draft(item_id: int):
+    """
+    Body (all optional):
+      piece_id           — existing piece id, or null to unlink
+      piece_name         — display/name when unlinked or creating later
+      timestamp_seconds  — int >= 0
+      sequence_number    — int >= 1 (must be unique within concert draft)
+    """
+    (
+        db, Concert, Artist, Raga, Talam, Composer, Piece,
+        ConcertArtist, SetlistItem, ConcertDraft, ConcertArtistDraft, SetlistItemDraft,
+    ) = _contribution_models()
+
+    item = db.session.get(SetlistItemDraft, item_id)
+    if not item:
+        abort(404)
+
+    draft = db.session.get(ConcertDraft, item.concert_draft_id)
+    if draft and draft.status != "submitted":
+        return jsonify({
+            "error": f"Only submitted drafts can be edited; status is {draft.status!r}",
+        }), 409
+
+    data = request.get_json(force=True) or {}
+
+    if "piece_id" in data:
+        piece_id = data["piece_id"]
+        if piece_id is None:
+            item.piece_id = None
+            if "piece_name" in data:
+                name = (data["piece_name"] or "").strip()
+                if not name:
+                    return jsonify({"error": "piece_name cannot be empty when unlinking"}), 400
+                item.piece_name = name
+        else:
+            piece = db.session.get(Piece, piece_id)
+            if not piece:
+                return jsonify({"error": "piece_id not found"}), 400
+            item.piece_id = piece.id
+            item.piece_name = piece.name
+            item.raga_id = piece.raga_id
+            item.talam_id = piece.talam_id
+            item.composer_id = piece.composer_id
+            item.raga_name = piece.raga.name if piece.raga else item.raga_name
+            item.talam_name = piece.talam.name if piece.talam else item.talam_name
+            item.composer_name = (
+                piece.composer.name if piece.composer else item.composer_name
+            )
+            item.kind = piece.kind or item.kind
+    elif "piece_name" in data:
+        name = (data["piece_name"] or "").strip()
+        if not name:
+            return jsonify({"error": "piece_name cannot be empty"}), 400
+        item.piece_name = name
+
+    if "timestamp_seconds" in data:
+        ts = data["timestamp_seconds"]
+        if ts is None:
+            return jsonify({"error": "timestamp_seconds cannot be null"}), 400
+        try:
+            ts = int(ts)
+        except (TypeError, ValueError):
+            return jsonify({"error": "timestamp_seconds must be an integer"}), 400
+        if ts < 0:
+            return jsonify({"error": "timestamp_seconds must be >= 0"}), 400
+        item.timestamp_seconds = ts
+
+    if "sequence_number" in data:
+        seq = data["sequence_number"]
+        try:
+            seq = int(seq)
+        except (TypeError, ValueError):
+            return jsonify({"error": "sequence_number must be an integer"}), 400
+        if seq < 1:
+            return jsonify({"error": "sequence_number must be >= 1"}), 400
+        conflict = (
+            db.session.query(SetlistItemDraft)
+            .filter(
+                SetlistItemDraft.concert_draft_id == item.concert_draft_id,
+                SetlistItemDraft.sequence_number == seq,
+                SetlistItemDraft.id != item.id,
+            )
+            .first()
+        )
+        if conflict:
+            return jsonify({
+                "error": f"sequence_number {seq} already used by setlist draft {conflict.id}",
+            }), 400
+        item.sequence_number = seq
+
+    try:
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 400
+
+    db.session.refresh(item)
+    return jsonify(_setlist_item_draft_summary(item))
 
 
 # ---------------------------------------------------------------------------
