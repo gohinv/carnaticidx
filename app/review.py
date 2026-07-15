@@ -14,7 +14,8 @@ GET  /review/pieces/incomplete      → pieces with any NULL FK
 GET  /review/pieces/<id>            → piece detail + setlist appearances
 PATCH /review/pieces/<id>           → edit name/raga/composer/talam/kind
 GET  /review/concerts/search        → concert search (?q=&limit=)
-GET  /review/concerts/<id>/setlist  → editable setlist for a concert
+GET  /review/concerts/<id>/setlist  → editable setlist + artists for a concert
+PATCH /review/concerts/<id>         → edit concert metadata / replace lineup
 PATCH /review/setlist/<id>          → edit piece/timestamp/sequence
 GET  /review/concert-drafts         → paginated contributed concert drafts
 GET  /review/concert-drafts/<id>    → contributed concert draft detail
@@ -129,6 +130,19 @@ def _concert_summary(c) -> dict:
         "duration_seconds": c.duration_seconds,
         "url": f"https://www.youtube.com/watch?v={c.youtube_id}",
     }
+
+
+def _concert_artist_summary(ca, artist) -> dict:
+    return {
+        "id": ca.id,
+        "artist_id": artist.id if artist else ca.artist_id,
+        "artist_name": artist.name if artist else None,
+        "instrument": ca.instrument,
+        "role": ca.role,
+    }
+
+
+ALLOWED_ARTIST_ROLES = frozenset({"main artist", "accompanist"})
 
 
 def _concert_draft_summary(draft) -> dict:
@@ -858,6 +872,10 @@ def search_concerts():
 
 @review_bp.route("/concerts/<int:concert_id>/setlist")
 def concert_setlist(concert_id: int):
+    from sqlalchemy import case
+
+    from app import ConcertArtist, Artist
+
     db, Concert, *_, SetlistItem, IngestDraft = _models()
     concert = db.session.get(Concert, concert_id)
     if not concert:
@@ -869,9 +887,182 @@ def concert_setlist(concert_id: int):
         .order_by(SetlistItem.sequence_number)
         .all()
     )
+    artist_rows = (
+        db.session.query(ConcertArtist, Artist)
+        .join(Artist, ConcertArtist.artist_id == Artist.id)
+        .filter(ConcertArtist.concert_id == concert_id)
+        .order_by(
+            case((ConcertArtist.role == "main artist", 0), else_=1),
+            Artist.name,
+        )
+        .all()
+    )
     return jsonify({
         "concert": _concert_summary(concert),
+        "artists": [_concert_artist_summary(ca, a) for ca, a in artist_rows],
         "items": [_setlist_item_summary(si) for si in items],
+    })
+
+
+@review_bp.route("/concerts/<int:concert_id>", methods=["PATCH"])
+def patch_concert(concert_id: int):
+    """
+    Body (all optional):
+      title, year, venue, duration_seconds, youtube_id
+      artists — full lineup replacement:
+        [{"artist_id": int|null, "artist_name": str, "role": str, "instrument": str|null}, ...]
+
+    Artist rows resolve by artist_id when set; otherwise case-insensitive name
+    match or create. Does not rename existing Artist rows.
+    """
+    from app import ConcertArtist
+
+    db, Concert, Artist, *_ = _models()
+    concert = db.session.get(Concert, concert_id)
+    if not concert:
+        abort(404)
+
+    data = request.get_json(force=True) or {}
+
+    if "title" in data:
+        title = (data["title"] or "").strip()
+        if not title:
+            return jsonify({"error": "title cannot be empty"}), 400
+        concert.title = title
+
+    if "year" in data:
+        year = data["year"]
+        if year is None or year == "":
+            concert.year = None
+        else:
+            try:
+                year = int(year)
+            except (TypeError, ValueError):
+                return jsonify({"error": "year must be an integer"}), 400
+            concert.year = year
+
+    if "venue" in data:
+        venue = data["venue"]
+        concert.venue = (venue or "").strip() or None
+
+    if "duration_seconds" in data:
+        duration = data["duration_seconds"]
+        if duration is None or duration == "":
+            concert.duration_seconds = None
+        else:
+            try:
+                duration = int(duration)
+            except (TypeError, ValueError):
+                return jsonify({"error": "duration_seconds must be an integer"}), 400
+            if duration < 0:
+                return jsonify({"error": "duration_seconds must be >= 0"}), 400
+            concert.duration_seconds = duration
+
+    if "youtube_id" in data:
+        youtube_id = (data["youtube_id"] or "").strip()
+        if not youtube_id:
+            return jsonify({"error": "youtube_id cannot be empty"}), 400
+        conflict = (
+            db.session.query(Concert)
+            .filter(Concert.youtube_id == youtube_id, Concert.id != concert.id)
+            .first()
+        )
+        if conflict:
+            return jsonify({
+                "error": "A concert with this YouTube ID already exists",
+                "concert_id": conflict.id,
+            }), 409
+        concert.youtube_id = youtube_id
+
+    if "artists" in data:
+        artists = data["artists"]
+        if not isinstance(artists, list):
+            return jsonify({"error": "artists must be an array"}), 400
+        if not artists:
+            return jsonify({"error": "at least one artist is required"}), 400
+
+        resolved = []
+        seen_keys = set()
+        has_main = False
+        try:
+            for i, row in enumerate(artists):
+                if not isinstance(row, dict):
+                    return jsonify({"error": f"artist {i + 1}: invalid object"}), 400
+                name = (row.get("artist_name") or "").strip()
+                artist_id = row.get("artist_id") or None
+                if artist_id is not None:
+                    try:
+                        artist_id = int(artist_id)
+                    except (TypeError, ValueError):
+                        return jsonify({"error": f"artist {i + 1}: artist_id must be an integer"}), 400
+                role = (row.get("role") or "").strip() or "main artist"
+                if role not in ALLOWED_ARTIST_ROLES:
+                    return jsonify({
+                        "error": f"artist {i + 1}: role must be 'main artist' or 'accompanist'",
+                    }), 400
+                instrument = row.get("instrument")
+                instrument = (instrument or "").strip() or None
+
+                artist = _promote_named_draft_reference(
+                    db.session,
+                    Artist,
+                    artist_id,
+                    name,
+                    "artist",
+                    required=True,
+                )
+                key = (artist.id, instrument or "", role)
+                if key in seen_keys:
+                    return jsonify({
+                        "error": (
+                            f"artist {i + 1}: duplicate lineup entry for "
+                            f"{artist.name!r} with the same instrument and role"
+                        ),
+                    }), 400
+                seen_keys.add(key)
+                if role == "main artist":
+                    has_main = True
+                resolved.append((artist, instrument, role))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        if not has_main:
+            return jsonify({"error": "at least one main artist is required"}), 400
+
+        (
+            db.session.query(ConcertArtist)
+            .filter_by(concert_id=concert.id)
+            .delete(synchronize_session=False)
+        )
+        for artist, instrument, role in resolved:
+            db.session.add(ConcertArtist(
+                concert_id=concert.id,
+                artist_id=artist.id,
+                instrument=instrument,
+                role=role,
+            ))
+
+    try:
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 400
+
+    from sqlalchemy import case
+
+    artist_rows = (
+        db.session.query(ConcertArtist, Artist)
+        .join(Artist, ConcertArtist.artist_id == Artist.id)
+        .filter(ConcertArtist.concert_id == concert.id)
+        .order_by(
+            case((ConcertArtist.role == "main artist", 0), else_=1),
+            Artist.name,
+        )
+        .all()
+    )
+    return jsonify({
+        "concert": _concert_summary(concert),
+        "artists": [_concert_artist_summary(ca, a) for ca, a in artist_rows],
     })
 
 

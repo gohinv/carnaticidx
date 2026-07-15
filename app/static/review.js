@@ -16,7 +16,11 @@ let concertDrafts = [];
 let concertDraftsTotal = 0;
 let expandedConcertDraftId = null;
 let concertDraftDetailCache = {};
+let concertArtistRowSeq = 0;
+let concertArtistTimers = {};
+let concertArtistSuggestionIdx = {};
 const KIND_OPTIONS = ['','krithi','varnam','padam','tillana','viruttam','slokam','mangalam','bhajan','rtp'];
+const ARTIST_ROLE_OPTIONS = ['main artist', 'accompanist'];
 
 // ---- Init ----
 async function init() {
@@ -859,7 +863,7 @@ function initSetlistsPanel() {
             </div>
           </div>
           <div class="edit-form" id="setlist-edit-form">
-            <div class="empty"><span>🎼</span>Search for a concert to edit its setlist</div>
+            <div class="empty"><span>🎼</span>Search for a concert to edit its metadata and setlist</div>
           </div>
         </div>
       </div>`;
@@ -904,6 +908,18 @@ async function loadConcertSetlist(concertId) {
 
 function renderSetlistEditor(data) {
   const c = data.concert;
+  const artists = data.artists || [];
+  concertArtistRowSeq = 0;
+
+  const artistRows = artists.length
+    ? artists.map(a => concertArtistRowHtml({
+        artist_id: a.artist_id,
+        artist_name: a.artist_name || '',
+        role: a.role || 'main artist',
+        instrument: a.instrument || '',
+      })).join('')
+    : concertArtistRowHtml({ role: 'main artist' });
+
   const rows = (data.items || []).map(si => {
     const pieceName = si.piece ? si.piece.name : '';
     const pieceSub = si.piece
@@ -939,15 +955,257 @@ function renderSetlistEditor(data) {
   }).join('');
 
   document.getElementById('setlist-edit-form').innerHTML = `
+    <div class="section" id="concert-meta-section">
+      <div class="label">Concert metadata</div>
+      <div class="fields">
+        <div class="field" style="flex:2;min-width:200px">
+          <label>Title</label>
+          <input id="cm-title" value="${escHtml(c.title || '')}">
+        </div>
+        <div class="field" style="min-width:90px;flex:0.4">
+          <label>Year</label>
+          <input id="cm-year" type="number" value="${c.year != null ? c.year : ''}">
+        </div>
+        <div class="field" style="flex:1.2;min-width:140px">
+          <label>Venue</label>
+          <input id="cm-venue" value="${escHtml(c.venue || '')}">
+        </div>
+        <div class="field" style="min-width:110px;flex:0.5">
+          <label>Duration (sec)</label>
+          <input id="cm-duration" type="number" min="0" value="${c.duration_seconds != null ? c.duration_seconds : ''}">
+        </div>
+        <div class="field" style="min-width:140px">
+          <label>YouTube ID</label>
+          <input id="cm-youtube" value="${escHtml(c.youtube_id || '')}">
+        </div>
+      </div>
+      <div style="margin-top:8px">
+        <a class="concert-link" id="cm-watch-link" href="${c.url}" target="_blank" rel="noopener">▶ Watch on YouTube</a>
+      </div>
+    </div>
     <div class="section">
-      <div class="label">Concert</div>
-      <a class="concert-link" href="${c.url}" target="_blank">▶ ${escHtml(c.title || c.youtube_id)}</a>
-      <div style="font-size:12px;color:#555;margin-top:4px">${[c.year, c.venue].filter(Boolean).join(' · ')}</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:5px">
+        <div class="label" style="margin:0">Artists</div>
+        <button type="button" class="btn btn-sm btn-save" onclick="addConcertArtistRow()">+ Add artist</button>
+      </div>
+      <div id="concert-artists">${artistRows}</div>
+      <div class="actions" style="margin-top:12px">
+        <button class="btn btn-resolve" onclick="saveConcertMetadata()">Save concert</button>
+      </div>
     </div>
     <div class="section">
       <div class="label">Setlist (${(data.items||[]).length} items)</div>
       ${rows || '<div style="color:#444;font-size:12px">No setlist items</div>'}
     </div>`;
+
+  renumberConcertArtistRows();
+}
+
+function concertArtistRowHtml(prefill = {}) {
+  const id = ++concertArtistRowSeq;
+  const name = prefill.artist_name || '';
+  const role = prefill.role || 'main artist';
+  const instrument = prefill.instrument || '';
+  const artistId = prefill.artist_id || '';
+  const linked = !!artistId;
+  return `
+    <div class="concert-artist-row" id="ca-row-${id}" data-artist-id="${artistId}">
+      <div class="concert-artist-fields">
+        <div class="setlist-piece-wrap" style="flex:2;min-width:160px">
+          <div class="label" style="margin-bottom:3px">Name</div>
+          <input id="ca-name-${id}" value="${escHtml(name)}"
+            placeholder="Search existing artist or type a new name…"
+            autocomplete="off"
+            oninput="onConcertArtistSearch(${id}, this.value)"
+            onkeydown="onConcertArtistKey(event, ${id})">
+          <div class="setlist-piece-sub" id="ca-status-${id}">${
+            linked ? 'Linked to existing artist' : 'New artist (will be created if no match)'
+          }</div>
+          <div id="ca-sugg-${id}" style="display:none"></div>
+        </div>
+        <div style="min-width:130px">
+          <div class="label" style="margin-bottom:3px">Role</div>
+          <select id="ca-role-${id}">
+            ${ARTIST_ROLE_OPTIONS.map(r =>
+              `<option value="${r}"${r === role ? ' selected' : ''}>${r}</option>`
+            ).join('')}
+          </select>
+        </div>
+        <div style="flex:1;min-width:120px">
+          <div class="label" style="margin-bottom:3px">Instrument</div>
+          <input id="ca-instrument-${id}" value="${escHtml(instrument)}" placeholder="e.g. vocal, violin">
+        </div>
+        <div style="padding-top:18px">
+          <button type="button" class="btn btn-sm btn-skip" onclick="removeConcertArtistRow(${id})">Remove</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function addConcertArtistRow(prefill = { role: 'accompanist' }) {
+  const box = document.getElementById('concert-artists');
+  if (!box) return;
+  box.insertAdjacentHTML('beforeend', concertArtistRowHtml(prefill));
+  renumberConcertArtistRows();
+}
+
+function removeConcertArtistRow(rowId) {
+  const box = document.getElementById('concert-artists');
+  if (!box) return;
+  if (box.querySelectorAll('.concert-artist-row').length <= 1) {
+    toast('At least one artist is required', true);
+    return;
+  }
+  document.getElementById(`ca-row-${rowId}`)?.remove();
+  renumberConcertArtistRows();
+}
+
+function renumberConcertArtistRows() {
+  document.querySelectorAll('#concert-artists .concert-artist-row').forEach((row, i) => {
+    row.dataset.rowIndex = String(i + 1);
+  });
+}
+
+async function onConcertArtistSearch(rowId, q) {
+  const row = document.getElementById(`ca-row-${rowId}`);
+  if (row) row.dataset.artistId = '';
+  const status = document.getElementById(`ca-status-${rowId}`);
+  if (status) status.textContent = 'New artist (will be created if no match)';
+  clearTimeout(concertArtistTimers[rowId]);
+  if (!q || q.length < 2) {
+    hideConcertArtistSuggestions(rowId);
+    return;
+  }
+  concertArtistTimers[rowId] = setTimeout(async () => {
+    const res = await fetch(`/artists/autocomplete/${encodeURIComponent(q)}`);
+    const items = await res.json();
+    showConcertArtistSuggestions(rowId, items);
+  }, 180);
+}
+
+function showConcertArtistSuggestions(rowId, items) {
+  const box = document.getElementById(`ca-sugg-${rowId}`);
+  if (!box) return;
+  if (!items.length) { box.style.display = 'none'; return; }
+  concertArtistSuggestionIdx[rowId] = -1;
+  box.style.cssText = 'position:absolute;left:0;right:0;top:100%;background:#1e1e1e;border:1px solid #2e2e2e;border-radius:0 0 6px 6px;z-index:10;max-height:180px;overflow-y:auto;';
+  box.innerHTML = items.map((a, i) => `
+    <div class="suggestion" data-id="${a.id}" data-name="${escHtml(a.name)}"
+         onmousedown="pickConcertArtist(${rowId}, ${a.id}, this.dataset.name)"
+         onmouseover="concertArtistSuggestionIdx[${rowId}]=${i}">
+      <div>${escHtml(a.name)}</div>
+    </div>`).join('');
+  box.style.display = 'block';
+}
+
+function hideConcertArtistSuggestions(rowId) {
+  const box = document.getElementById(`ca-sugg-${rowId}`);
+  if (box) { box.style.display = 'none'; concertArtistSuggestionIdx[rowId] = -1; }
+}
+
+function onConcertArtistKey(e, rowId) {
+  const box = document.getElementById(`ca-sugg-${rowId}`);
+  const items = box ? box.querySelectorAll('.suggestion') : [];
+  let idx = concertArtistSuggestionIdx[rowId] ?? -1;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault(); idx = Math.min(idx + 1, items.length - 1); concertArtistSuggestionIdx[rowId] = idx;
+    items.forEach((el, i) => el.classList.toggle('active', i === idx));
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault(); idx = Math.max(idx - 1, -1); concertArtistSuggestionIdx[rowId] = idx;
+    items.forEach((el, i) => el.classList.toggle('active', i === idx));
+  } else if (e.key === 'Enter' && idx >= 0) {
+    e.preventDefault();
+    const el = items[idx];
+    if (el) pickConcertArtist(rowId, +el.dataset.id, el.dataset.name);
+  } else if (e.key === 'Escape') {
+    hideConcertArtistSuggestions(rowId);
+  }
+}
+
+function pickConcertArtist(rowId, artistId, name) {
+  const row = document.getElementById(`ca-row-${rowId}`);
+  const input = document.getElementById(`ca-name-${rowId}`);
+  const status = document.getElementById(`ca-status-${rowId}`);
+  if (row) row.dataset.artistId = String(artistId);
+  if (input) input.value = name;
+  if (status) status.textContent = 'Linked to existing artist';
+  hideConcertArtistSuggestions(rowId);
+}
+
+function collectConcertArtists() {
+  return [...document.querySelectorAll('#concert-artists .concert-artist-row')].map(row => {
+    const id = row.id.replace('ca-row-', '');
+    const artistId = row.dataset.artistId ? parseInt(row.dataset.artistId, 10) : null;
+    return {
+      artist_id: Number.isFinite(artistId) ? artistId : null,
+      artist_name: document.getElementById(`ca-name-${id}`)?.value?.trim() || '',
+      role: document.getElementById(`ca-role-${id}`)?.value || 'main artist',
+      instrument: document.getElementById(`ca-instrument-${id}`)?.value?.trim() || null,
+    };
+  });
+}
+
+async function saveConcertMetadata() {
+  if (!setlistConcertId) return;
+
+  const title = document.getElementById('cm-title')?.value?.trim();
+  const yearRaw = document.getElementById('cm-year')?.value?.trim();
+  const venue = document.getElementById('cm-venue')?.value?.trim();
+  const durationRaw = document.getElementById('cm-duration')?.value?.trim();
+  const youtubeId = document.getElementById('cm-youtube')?.value?.trim();
+  const artists = collectConcertArtists();
+
+  if (!title) { toast('Title is required', true); return; }
+  if (!youtubeId) { toast('YouTube ID is required', true); return; }
+  if (!artists.length) { toast('At least one artist is required', true); return; }
+  for (let i = 0; i < artists.length; i++) {
+    if (!artists[i].artist_name) {
+      toast(`Artist ${i + 1}: name is required`, true);
+      return;
+    }
+  }
+  if (!artists.some(a => a.role === 'main artist')) {
+    toast('Mark at least one artist as main artist', true);
+    return;
+  }
+
+  let year = null;
+  if (yearRaw !== '') {
+    year = parseInt(yearRaw, 10);
+    if (Number.isNaN(year)) { toast('Year must be a number', true); return; }
+  }
+  let duration_seconds = null;
+  if (durationRaw !== '') {
+    duration_seconds = parseInt(durationRaw, 10);
+    if (Number.isNaN(duration_seconds) || duration_seconds < 0) {
+      toast('Duration must be a non-negative number', true);
+      return;
+    }
+  }
+
+  const body = {
+    title,
+    year,
+    venue: venue || null,
+    duration_seconds,
+    youtube_id: youtubeId,
+    artists,
+  };
+
+  const res = await fetch(`/review/concerts/${setlistConcertId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (res.ok) {
+    toast('✓ Concert saved');
+    await loadConcertSetlist(setlistConcertId);
+    const q = document.getElementById('concert-search')?.value?.trim();
+    if (q && q.length >= 2) onConcertSearch(q);
+  } else {
+    const err = await res.json().catch(() => ({}));
+    toast(err.error || 'Save failed', true);
+  }
 }
 
 function markSetlistDirty(id) {

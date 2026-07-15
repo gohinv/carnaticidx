@@ -1,6 +1,7 @@
 from math import pi
 import sys
 from pathlib import Path
+import os
 
 from flask import Flask, jsonify, render_template, request
 from flask_sqlalchemy import SQLAlchemy
@@ -31,7 +32,7 @@ app = Flask(
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.jinja_env.auto_reload = True
 
-app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://gohitha@localhost/carnaticidx'
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URI')
 
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)

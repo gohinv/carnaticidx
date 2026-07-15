@@ -45,6 +45,32 @@
   .btn-save { background: #1e2535; color: #6a9ae8; padding: 6px 12px; }
   .btn-sm { padding: 6px 12px; font-size: 12px; }
   .dirty input { border-color: #a09050 !important; }
+  .concert-artist-row {
+    padding: 10px 0;
+    border-bottom: 1px solid #1a1a1a;
+  }
+  .concert-artist-row:last-child { border-bottom: none; }
+  .concert-artist-fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: start;
+  }
+  .concert-artist-fields select,
+  .concert-artist-fields input {
+    background: #1a1a1a;
+    border: 1px solid #2e2e2e;
+    color: #e8e8e8;
+    padding: 6px 8px;
+    border-radius: 5px;
+    font-size: 13px;
+    width: 100%;
+  }
+  .concert-artist-fields select:focus,
+  .concert-artist-fields input:focus {
+    outline: none;
+    border-color: #4a7cdc;
+  }
 
   /* List items */
   .draft-item { padding: 10px 14px; border-bottom: 1px solid #1a1a1a; cursor: pointer; }

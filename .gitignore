@@ -3,3 +3,4 @@ ingest/credentials.json
 ingest/credentials-desktop.json
 ingest/*.txt
 ingest/*.csv
+app/.env
