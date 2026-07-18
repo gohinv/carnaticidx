@@ -1,6 +1,8 @@
 """
 Review blueprint — interactive draft resolution and record editing.
 
+All /review routes require HTTP Basic Auth (ADMIN_USERNAME / ADMIN_PASSWORD).
+
 Routes
 ------
 GET  /review/                       → SPA shell (HTML)
@@ -29,10 +31,12 @@ GET  /review/lookup/talams          → all talam names
 
 from __future__ import annotations
 
+import os
+import secrets
 import sys
 from pathlib import Path
 
-from flask import Blueprint, jsonify, request, abort, render_template
+from flask import Blueprint, Response, jsonify, request, abort, render_template
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -46,6 +50,35 @@ review_bp = Blueprint(
     static_folder=str(_APP_DIR / "static"),
     static_url_path="/static",
 )
+
+
+def _unauthorized():
+    return Response(
+        "Authentication required",
+        401,
+        {"WWW-Authenticate": 'Basic realm="Review"'},
+    )
+
+
+@review_bp.before_request
+def require_admin_auth():
+    """HTTP Basic Auth for all /review routes using ADMIN_USERNAME / ADMIN_PASSWORD."""
+    expected_user = os.getenv("ADMIN_USERNAME")
+    expected_pass = os.getenv("ADMIN_PASSWORD")
+    if not expected_user or not expected_pass:
+        return Response(
+            "Admin credentials are not configured",
+            503,
+        )
+
+    auth = request.authorization
+    if not auth or not auth.username or auth.password is None:
+        return _unauthorized()
+
+    user_ok = secrets.compare_digest(auth.username, expected_user)
+    pass_ok = secrets.compare_digest(auth.password, expected_pass)
+    if not (user_ok and pass_ok):
+        return _unauthorized()
 
 
 def _db():

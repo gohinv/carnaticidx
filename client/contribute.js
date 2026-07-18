@@ -521,6 +521,17 @@ prefillSetlistBtn.addEventListener('click', async () => {
 document.getElementById('add-artist-btn').addEventListener('click', () => addArtistRow({ role: 'accompanist' }));
 document.getElementById('add-setlist-btn').addEventListener('click', () => addSetlistRow());
 
+function getTurnstileToken() {
+  const el = document.querySelector('[name="cf-turnstile-response"]');
+  return el ? el.value.trim() : '';
+}
+
+function resetTurnstile() {
+  if (window.turnstile && document.getElementById('cf-turnstile')) {
+    turnstile.reset('#cf-turnstile');
+  }
+}
+
 // collect all form fields into draft payload
 function buildContributePayload() {
   const youtubeId = parseYoutubeId(contribYoutube.value);
@@ -539,6 +550,7 @@ function buildContributePayload() {
     duration_seconds: duration,
     artists,
     setlist,
+    'cf-turnstile-response': getTurnstileToken(),
   };
 }
 
@@ -587,6 +599,11 @@ contributeForm.addEventListener('submit', async (e) => {
     return;
   }
 
+  if (!window.TURNSTILE_DISABLED && !payload['cf-turnstile-response']) {
+    setContribStatus('Please complete the captcha.', 'err');
+    return;
+  }
+
   contribSubmit.disabled = true;
   setContribStatus('Submitting…');
 
@@ -599,6 +616,7 @@ contributeForm.addEventListener('submit', async (e) => {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       setContribStatus(data.error || 'Submission failed.', 'err');
+      resetTurnstile();
       return;
     }
     setContribStatus(`Submitted for review (draft #${data.id}).`, 'ok');
@@ -611,8 +629,10 @@ contributeForm.addEventListener('submit', async (e) => {
     autoResizeDescriptionTextarea();
     addArtistRow({ role: 'main artist' });
     addSetlistRow({ sequence_number: 1, timestamp: '0:00' });
+    resetTurnstile();
   } catch {
     setContribStatus('Could not reach the server. Is it running?', 'err');
+    resetTurnstile();
   } finally {
     contribSubmit.disabled = false;
   }

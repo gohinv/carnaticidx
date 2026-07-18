@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 import os
 
+import requests
 from flask import Flask, jsonify, render_template, request
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
@@ -23,14 +24,40 @@ from ingest.populate_db import (  # noqa: E402
 
 load_dotenv()
 
+IS_PRODUCTION = os.getenv("FLASK_ENV") == "production"
+
+if IS_PRODUCTION:
+    missing = [
+        k for k in (
+            "DATABASE_URI",
+            "SECRET_KEY",
+            "ADMIN_USERNAME",
+            "ADMIN_PASSWORD",
+            "TURNSTILE_SITE_KEY",
+            "TURNSTILE_SECRET_KEY",
+        )
+        if not os.getenv(k)
+    ]
+    if missing:
+        raise RuntimeError(
+            f"Missing required environment variables: {', '.join(missing)}"
+        )
+
 app = Flask(
     __name__,
     template_folder='../client',
     static_folder='../client',
     static_url_path='',
 )
-app.config['TEMPLATES_AUTO_RELOAD'] = True
-app.jinja_env.auto_reload = True
+
+if IS_PRODUCTION:
+    app.config['SECRET_KEY'] = os.environ['SECRET_KEY']
+    app.config['TEMPLATES_AUTO_RELOAD'] = False
+    app.jinja_env.auto_reload = False
+else:
+    app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-only')
+    app.config['TEMPLATES_AUTO_RELOAD'] = True
+    app.jinja_env.auto_reload = True
 
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URI')
 
@@ -382,6 +409,30 @@ def _resolve_piece(piece_name, raga_id=None):
     return _prefer_canonical_row(candidates)
 
 
+TURNSTILE_VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify'
+
+
+def verify_turnstile(token: str, remote_ip: str | None = None) -> bool:
+    """Verify a Cloudflare Turnstile token. Skip only when disabled outside production."""
+    if os.getenv('TURNSTILE_DISABLED') == '1' and not IS_PRODUCTION:
+        return True
+
+    secret = os.getenv('TURNSTILE_SECRET_KEY')
+    if not secret or not token:
+        return False
+
+    payload = {'secret': secret, 'response': token}
+    if remote_ip:
+        payload['remoteip'] = remote_ip
+
+    try:
+        response = requests.post(TURNSTILE_VERIFY_URL, data=payload, timeout=5)
+        response.raise_for_status()
+        return bool(response.json().get('success'))
+    except requests.RequestException:
+        return False
+
+
 @app.route('/contributions/parse_setlist', methods=['POST'])
 def parse_contribution_setlist():
     data = request.get_json(silent=True)
@@ -447,6 +498,11 @@ def create_concert_draft():
     data = request.get_json(silent=True)
     if not data:
         return jsonify({"error": "Request body must be JSON"}), 400
+
+    token = (data.get('cf-turnstile-response') or '').strip()
+    remote_ip = request.headers.get('CF-Connecting-IP') or request.remote_addr
+    if not verify_turnstile(token, remote_ip):
+        return jsonify({"error": "Captcha verification failed"}), 403
 
     youtube_id = (data.get('youtube_id') or '').strip()
     title = (data.get('title') or '').strip()
@@ -754,7 +810,11 @@ def get_concert_artists(concert_id: int):
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template(
+        'index.html',
+        turnstile_site_key=os.getenv('TURNSTILE_SITE_KEY', ''),
+        turnstile_disabled=os.getenv('TURNSTILE_DISABLED') == '1',
+    )
 
 
 # TEST ENDPOINTS
@@ -777,7 +837,9 @@ def view_concerts():
 from review import review_bp  # noqa: E402
 app.register_blueprint(review_bp)
 
-
+if IS_PRODUCTION:
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=not IS_PRODUCTION)

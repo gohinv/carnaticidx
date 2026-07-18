@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Carnatic Index</title>
   <link rel="stylesheet" href="/styles.css" />
+  <meta name="turnstile-site-key" content="{{ turnstile_site_key }}">
+  {% if not turnstile_disabled and turnstile_site_key %}
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  {% endif %}
 </head>
 <body>
 
@@ -148,11 +152,25 @@
           </div>
         </section>
 
+        {% if not turnstile_disabled and turnstile_site_key %}
+        <div class="form-field form-field-full">
+          <div
+            id="cf-turnstile"
+            class="cf-turnstile"
+            data-sitekey="{{ turnstile_site_key }}"
+            data-theme="light"
+          ></div>
+        </div>
+        {% endif %}
+
         <div class="form-actions">
           <button type="submit" class="btn-primary" id="contrib-submit">Submit for review</button>
           <p id="contrib-status" class="form-status" role="status" aria-live="polite"></p>
         </div>
       </form>
+      <script>
+        window.TURNSTILE_DISABLED = {{ 'true' if turnstile_disabled else 'false' }};
+      </script>
     </div>
   </section>
 
