@@ -2,9 +2,12 @@ from math import pi
 import sys
 from pathlib import Path
 import os
+import re
 
 import requests
 from flask import Flask, jsonify, render_template, request
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from dotenv import load_dotenv
@@ -60,6 +63,19 @@ else:
     app.jinja_env.auto_reload = True
 
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URI')
+
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app,
+    default_limits=[],
+    storage_uri=os.getenv('RATELIMIT_STORAGE_URI', 'memory://'),
+)
+
+
+@app.errorhandler(429)
+def rate_limit_exceeded(_error):
+    return jsonify({"error": "Too many requests. Please try again later."}), 429
+
 
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
@@ -410,6 +426,95 @@ def _resolve_piece(piece_name, raga_id=None):
 
 
 TURNSTILE_VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify'
+YOUTUBE_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]{11}$')
+
+
+def _valid_optional_string(value, max_length: int) -> bool:
+    return value is None or (
+        isinstance(value, str) and len(value.strip()) <= max_length
+    )
+
+
+def _is_integer(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def validate_concert_draft_payload(data: dict) -> str | None:
+    youtube_id = data.get('youtube_id')
+    title = data.get('title')
+    year = data.get('year')
+    venue = data.get('venue')
+    duration_seconds = data.get('duration_seconds')
+    artists = data.get('artists')
+    setlist = data.get('setlist')
+
+    if not isinstance(youtube_id, str) or not YOUTUBE_ID_PATTERN.fullmatch(
+        youtube_id.strip()
+    ):
+        return "youtube_id must be a valid 11-character YouTube video ID"
+    if not isinstance(title, str) or not title.strip():
+        return "title is required"
+    if len(title.strip()) > 255:
+        return "title must be 255 characters or fewer"
+    if not _valid_optional_string(venue, 255):
+        return "venue must be 255 characters or fewer"
+    if year is not None and (
+        not _is_integer(year) or year < 1900 or year > 2100
+    ):
+        return "year must be an integer between 1900 and 2100"
+    if duration_seconds is not None and (
+        not _is_integer(duration_seconds) or duration_seconds < 0
+    ):
+        return "duration_seconds must be a non-negative integer"
+
+    if not isinstance(artists, list) or not artists:
+        return "at least one artist is required"
+    if len(artists) > 50:
+        return "no more than 50 artists are allowed"
+    for i, artist in enumerate(artists, start=1):
+        if not isinstance(artist, dict):
+            return f"artist {i}: must be an object"
+        name = artist.get('artist_name')
+        if not isinstance(name, str) or not name.strip():
+            return f"artist {i}: name is required"
+        if len(name.strip()) > 255:
+            return f"artist {i}: name must be 255 characters or fewer"
+        if not _valid_optional_string(artist.get('instrument'), 255):
+            return f"artist {i}: instrument must be 255 characters or fewer"
+        if not _valid_optional_string(artist.get('role'), 255):
+            return f"artist {i}: role must be 255 characters or fewer"
+
+    if not isinstance(setlist, list) or not setlist:
+        return "at least one setlist item is required"
+    if len(setlist) > 200:
+        return "no more than 200 setlist items are allowed"
+
+    sequence_numbers = set()
+    for i, item in enumerate(setlist, start=1):
+        if not isinstance(item, dict):
+            return f"setlist item {i}: must be an object"
+        piece_name = item.get('piece_name')
+        if not isinstance(piece_name, str) or not piece_name.strip():
+            return f"setlist item {i}: piece name is required"
+        if len(piece_name.strip()) > 255:
+            return f"setlist item {i}: piece name must be 255 characters or fewer"
+        for field in ('raga_name', 'talam_name', 'composer_name'):
+            if not _valid_optional_string(item.get(field), 255):
+                return f"setlist item {i}: {field} must be 255 characters or fewer"
+        if not _valid_optional_string(item.get('kind'), 50):
+            return f"setlist item {i}: kind must be 50 characters or fewer"
+
+        timestamp = item.get('timestamp_seconds')
+        if not _is_integer(timestamp) or timestamp < 0:
+            return f"setlist item {i}: timestamp must be a non-negative integer"
+        sequence = item.get('sequence_number')
+        if not _is_integer(sequence) or sequence < 1:
+            return f"setlist item {i}: sequence must be a positive integer"
+        if sequence in sequence_numbers:
+            return f"setlist item {i}: duplicate sequence number"
+        sequence_numbers.add(sequence)
+
+    return None
 
 
 def verify_turnstile(token: str, remote_ip: str | None = None) -> bool:
@@ -434,6 +539,7 @@ def verify_turnstile(token: str, remote_ip: str | None = None) -> bool:
 
 
 @app.route('/contributions/parse_setlist', methods=['POST'])
+@limiter.limit("20 per hour")
 def parse_contribution_setlist():
     data = request.get_json(silent=True)
     if not data:
@@ -494,44 +600,47 @@ def parse_contribution_setlist():
 
 
 @app.route('/contributions/create_concert_draft', methods=['POST'])
+@limiter.limit("5 per hour")
 def create_concert_draft():
     data = request.get_json(silent=True)
-    if not data:
+    if not isinstance(data, dict):
         return jsonify({"error": "Request body must be JSON"}), 400
 
-    token = (data.get('cf-turnstile-response') or '').strip()
-    remote_ip = request.headers.get('CF-Connecting-IP') or request.remote_addr
+    if data.get('website'):
+        return jsonify({"id": 0, "status": "submitted"}), 201
+
+    token_value = data.get('cf-turnstile-response')
+    token = token_value.strip() if isinstance(token_value, str) else ''
+    remote_ip = request.remote_addr
     if not verify_turnstile(token, remote_ip):
         return jsonify({"error": "Captcha verification failed"}), 403
 
-    youtube_id = (data.get('youtube_id') or '').strip()
-    title = (data.get('title') or '').strip()
+    validation_error = validate_concert_draft_payload(data)
+    if validation_error:
+        return jsonify({"error": validation_error}), 400
+
+    youtube_id = data['youtube_id'].strip()
+    title = data['title'].strip()
     year = data.get('year')
     venue = data.get('venue')
+    venue = venue.strip() if venue else None
     duration_seconds = data.get('duration_seconds')
-    artists = data.get('artists') or []
-    setlist = data.get('setlist') or []
+    artists = data['artists']
+    setlist = data['setlist']
 
-    if not youtube_id:
-        return jsonify({"error": "youtube_id is required"}), 400
-    if not title:
-        return jsonify({"error": "title is required"}), 400
-    if not artists:
-        return jsonify({"error": "at least one artist is required"}), 400
-    if not setlist:
-        return jsonify({"error": "at least one setlist item is required"}), 400
-
-    for i, artist in enumerate(artists):
-        if not (artist.get('artist_name') or '').strip():
-            return jsonify({"error": f"artist {i + 1}: name is required"}), 400
-
-    for i, item in enumerate(setlist):
-        if not (item.get('piece_name') or '').strip():
-            return jsonify({"error": f"setlist item {i + 1}: piece name is required"}), 400
-        if item.get('timestamp_seconds') is None:
-            return jsonify({"error": f"setlist item {i + 1}: timestamp is required"}), 400
-        if not item.get('sequence_number'):
-            return jsonify({"error": f"setlist item {i + 1}: sequence is required"}), 400
+    existing_concert = db.session.scalar(
+        db.select(Concert.id).where(Concert.youtube_id == youtube_id)
+    )
+    existing_draft = db.session.scalar(
+        db.select(ConcertDraft.id).where(
+            ConcertDraft.youtube_id == youtube_id,
+            ConcertDraft.status == 'submitted',
+        )
+    )
+    if existing_concert or existing_draft:
+        return jsonify({
+            "error": "A concert or submitted draft already exists for this YouTube video"
+        }), 409
 
     try:
         concert_draft = ConcertDraft(
@@ -550,8 +659,8 @@ def create_concert_draft():
                 concert_draft_id=concert_draft.id,
                 artist_id=artist.get('artist_id') or None,
                 artist_name=artist.get('artist_name').strip(),
-                instrument=artist.get('instrument'),
-                role=artist.get('role'),
+                instrument=(artist.get('instrument') or '').strip() or None,
+                role=(artist.get('role') or '').strip() or None,
             )
             db.session.add(concert_artist_draft)
 
@@ -563,10 +672,10 @@ def create_concert_draft():
                 talam_id=setlist_item.get('talam_id') or None,
                 composer_id=setlist_item.get('composer_id') or None,
                 piece_name=setlist_item.get('piece_name').strip(),
-                raga_name=setlist_item.get('raga_name'),
-                talam_name=setlist_item.get('talam_name'),
-                composer_name=setlist_item.get('composer_name'),
-                kind=setlist_item.get('kind'),
+                raga_name=(setlist_item.get('raga_name') or '').strip() or None,
+                talam_name=(setlist_item.get('talam_name') or '').strip() or None,
+                composer_name=(setlist_item.get('composer_name') or '').strip() or None,
+                kind=(setlist_item.get('kind') or '').strip() or None,
                 timestamp_seconds=setlist_item.get('timestamp_seconds'),
                 sequence_number=setlist_item.get('sequence_number'),
             )
@@ -582,6 +691,7 @@ def create_concert_draft():
 
 # Autocomplete Piece Names
 @app.route('/pieces/autocomplete/<string:prefix>', methods=['GET'])
+@limiter.limit("120 per minute")
 def autocomplete_pieces(prefix: str):
     rows = db.session.scalars(
         db.select(Piece)
@@ -610,6 +720,7 @@ def autocomplete_pieces(prefix: str):
 
 # Autocomplete Artist Names
 @app.route('/artists/autocomplete/<string:prefix>', methods=['GET'])
+@limiter.limit("120 per minute")
 def autocomplete_artists(prefix: str):
     rows = db.session.scalars(
         db.select(Artist)
@@ -627,6 +738,7 @@ def autocomplete_artists(prefix: str):
 
 # Autocomplete Raga Names
 @app.route('/ragas/autocomplete/<string:prefix>', methods=['GET'])
+@limiter.limit("120 per minute")
 def autocomplete_ragas(prefix: str):
     rows = db.session.scalars(
         db.select(Raga)
@@ -644,6 +756,7 @@ def autocomplete_ragas(prefix: str):
 
 # Autocomplete Talam Names
 @app.route('/talams/autocomplete/<string:prefix>', methods=['GET'])
+@limiter.limit("120 per minute")
 def autocomplete_talams(prefix: str):
     rows = db.session.scalars(
         db.select(Talam)
@@ -661,6 +774,7 @@ def autocomplete_talams(prefix: str):
 
 # Autocomplete Composer Names
 @app.route('/composers/autocomplete/<string:prefix>', methods=['GET'])
+@limiter.limit("120 per minute")
 def autocomplete_composers(prefix: str):
     rows = db.session.scalars(
         db.select(Composer)
@@ -678,6 +792,7 @@ def autocomplete_composers(prefix: str):
 
 # Find renditions of a piece
 @app.route('/pieces/get-setlist/<string:piece_name>', methods=['GET'])
+@limiter.limit("30 per minute")
 def get_setlist(piece_name: str):
     rows = db.session.execute(
         db.select(SetlistItem, Piece, Concert)
@@ -729,6 +844,7 @@ def get_setlist(piece_name: str):
 
 # Find concerts by main artist name
 @app.route('/concerts/find/<string:main_artist>', methods=['GET'])
+@limiter.limit("30 per minute")
 def find_concerts(main_artist: str):
    rows = db.session.execute(
         db.select(Concert)
@@ -751,6 +867,7 @@ def find_concerts(main_artist: str):
 
 # Get concert metadata by id
 @app.route('/concerts/get-metadata/<int:concert_id>', methods=['GET'])
+@limiter.limit("60 per minute")
 def get_concert_metadata(concert_id: int):
     row = db.session.get(Concert, concert_id)
     if row is None:
@@ -766,6 +883,7 @@ def get_concert_metadata(concert_id: int):
 
 # View setlist for a concert
 @app.route('/concerts/setlist/<int:concert_id>', methods=['GET'])
+@limiter.limit("60 per minute")
 def view_setlist(concert_id: int):
     rows = db.session.execute(
         db.select(SetlistItem, Piece)
@@ -788,6 +906,7 @@ def view_setlist(concert_id: int):
 
 # Get the artists for a concert
 @app.route('/concerts/get-artists/<int:concert_id>', methods=['GET'])
+@limiter.limit("60 per minute")
 def get_concert_artists(concert_id: int):
     rows = db.session.execute(
         db.select(ConcertArtist, Artist)

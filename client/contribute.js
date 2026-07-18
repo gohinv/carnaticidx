@@ -12,6 +12,8 @@ const contribYoutubeHint = document.getElementById('contrib-youtube-hint');
 const contribDescription = document.getElementById('contrib-description');
 const contribDescriptionHint = document.getElementById('contrib-description-hint');
 const prefillSetlistBtn = document.getElementById('prefill-setlist-btn');
+const turnstileDisabled =
+  document.querySelector('meta[name="turnstile-disabled"]')?.content === 'true';
 
 let artistRowSeq = 0;
 let setlistRowSeq = 0;
@@ -550,6 +552,7 @@ function buildContributePayload() {
     duration_seconds: duration,
     artists,
     setlist,
+    website: document.getElementById('contrib-website').value,
     'cf-turnstile-response': getTurnstileToken(),
   };
 }
@@ -599,7 +602,7 @@ contributeForm.addEventListener('submit', async (e) => {
     return;
   }
 
-  if (!window.TURNSTILE_DISABLED && !payload['cf-turnstile-response']) {
+  if (!turnstileDisabled && !payload['cf-turnstile-response']) {
     setContribStatus('Please complete the captcha.', 'err');
     return;
   }

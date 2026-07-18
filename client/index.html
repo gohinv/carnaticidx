@@ -6,6 +6,10 @@
   <title>Carnatic Index</title>
   <link rel="stylesheet" href="/styles.css" />
   <meta name="turnstile-site-key" content="{{ turnstile_site_key }}">
+  <meta
+    name="turnstile-disabled"
+    content="{{ 'true' if turnstile_disabled else 'false' }}"
+  >
   {% if not turnstile_disabled and turnstile_site_key %}
   <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
   {% endif %}
@@ -93,6 +97,17 @@
       </p>
 
       <form id="contribute-form" novalidate>
+        <div style="display:none" aria-hidden="true">
+          <label for="contrib-website">Website</label>
+          <input
+            id="contrib-website"
+            name="website"
+            type="text"
+            tabindex="-1"
+            autocomplete="off"
+          />
+        </div>
+
         <section class="form-section">
           <h3 class="form-section-title">Concert</h3>
           <div class="form-grid">
@@ -168,9 +183,6 @@
           <p id="contrib-status" class="form-status" role="status" aria-live="polite"></p>
         </div>
       </form>
-      <script>
-        window.TURNSTILE_DISABLED = {{ 'true' if turnstile_disabled else 'false' }};
-      </script>
     </div>
   </section>
 
