@@ -1,0 +1,12 @@
+**/venv
+**/__pycache__
+**/*.pyc
+.git
+.DS_Store
+ingest/.env
+ingest/credentials*.json
+ingest/*.txt
+ingest/*.csv
+app/.env
+**/.env
+.env.production
