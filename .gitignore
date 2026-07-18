@@ -5,6 +5,7 @@ ingest/*.txt
 ingest/*.csv
 app/.env
 .env.production
-**/__pycache__/
+app/__pycache__/
+ingest/__pycache__/
 **/*.pyc
 **/.DS_Store
