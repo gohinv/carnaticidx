@@ -4,3 +4,4 @@ ingest/credentials-desktop.json
 ingest/*.txt
 ingest/*.csv
 app/.env
+**/__pycache__
