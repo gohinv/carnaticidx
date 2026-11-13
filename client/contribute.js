@@ -1,5 +1,5 @@
 // contribute form options and dom refs
-const KIND_OPTIONS = ['', 'krithi', 'varnam', 'javali', 'padam', 'tillana', 'viruttam', 'slokam', 'mangalam', 'bhajan', 'tiruppavai', 'tiruppugazh', 'rtp'];
+const KIND_OPTIONS = ['', 'krithi', 'varnam', 'javali', 'padam', 'tillana', 'viruttam', 'slokam', 'mangalam', 'bhajan', 'tiruppavai', 'tiruppugazh', 'rtp', 'alapana'];
 const ROLE_OPTIONS = ['main artist', 'accompanist'];
 
 const contributeForm = document.getElementById('contribute-form');

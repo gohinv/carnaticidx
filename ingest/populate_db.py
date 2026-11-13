@@ -1,6 +1,7 @@
 import sys
 import re
 import unicodedata
+from functools import lru_cache
 from pathlib import Path
 from dataclasses import dataclass, field
 
@@ -364,6 +365,30 @@ def normalize_for_match(text: str) -> str:
     return s
 
 
+# Spelling-variant folding for transliterated Carnatic names, applied in order.
+_PHONETIC_SUBS = (
+    ("sh", "s"), ("th", "t"), ("dh", "d"), ("bh", "b"), ("kh", "k"),
+    ("gh", "g"), ("ch", "c"), ("zh", "l"), ("ow", "au"), ("w", "v"),
+    ("ee", "i"), ("oo", "u"),
+)
+
+# Keys shorter than this are too ambiguous to match on.
+PHONETIC_MIN_LEN = 4
+
+
+@lru_cache(maxsize=50000)
+def phonetic_key(text: str) -> str:
+    """Spelling-tolerant key: Thyagaraja/Tyagaraja, Rupakam/Rupaka, Kalyaani/Kalyani."""
+    s = re.sub(r"[^a-z]", "", normalize_for_match(text or ""))
+    for old, new in _PHONETIC_SUBS:
+        s = s.replace(old, new)
+    s = re.sub(r"y(?![aeiou])", "i", s)  # Muthuswamy/Muthuswami, but keep Tyagaraja
+    s = re.sub(r"(.)\1+", r"\1", s)
+    s = re.sub(r"m$", "", s)
+    s = re.sub(r"[aeiou]+$", "", s)
+    return s
+
+
 # ---------------------------------------------------------------------------
 # Build lookup index: normalized_alias -> canonical_name
 # ---------------------------------------------------------------------------
@@ -402,6 +427,78 @@ def lookup_talam(token: str) -> str | None:
         return result
     # Try original (for composite names like "tisra gati adi")
     return TALAM_INDEX.get(normalize_for_match(token))
+
+
+_TALAM_SUFFIX_RE = re.compile(r"\s*t[h]?[aā]la[m]?\s*$")
+
+
+class _NameIndex:
+    """Exact and unique-phonetic lookup over a set of known names."""
+
+    def __init__(self, names, seed: dict[str, list[str]] | None = None, strip_talam: bool = False):
+        self._strip_talam = strip_talam
+        self._exact: dict[str, str] = {}
+        self._phonetic: dict[str, dict[str, str]] = {}
+        # Database names first, so they win over the hardcoded seed spellings.
+        for name in names:
+            self._add(name, name)
+        for canon, aliases in (seed or {}).items():
+            for variant in (canon, *aliases):
+                self._add(variant, canon)
+
+    def _prep(self, text: str) -> str:
+        norm = normalize_for_match(text)
+        if self._strip_talam:
+            norm = _TALAM_SUFFIX_RE.sub("", norm)
+        return norm
+
+    def _add(self, variant: str, display: str) -> None:
+        norm = self._prep(variant)
+        if not norm:
+            return
+        self._exact.setdefault(norm, display)
+        key = phonetic_key(norm)
+        if len(key) >= PHONETIC_MIN_LEN:
+            self._phonetic.setdefault(key, {}).setdefault(norm, display)
+
+    def find(self, token: str) -> str | None:
+        norm = self._prep(token)
+        if not norm:
+            return None
+        hit = self._exact.get(norm)
+        if hit:
+            return hit
+        key = phonetic_key(norm)
+        if len(key) < PHONETIC_MIN_LEN:
+            return None
+        candidates = self._phonetic.get(key)
+        # Only trust a phonetic match when it is unambiguous.
+        if candidates and len(candidates) == 1:
+            return next(iter(candidates.values()))
+        return None
+
+
+class CatalogLookups:
+    """
+    Raga/talam/composer recognition backed by the database catalog.
+
+    Order: hardcoded alias dictionaries, then exact database names, then a
+    unique phonetic match against database names and the hardcoded aliases.
+    """
+
+    def __init__(self, ragas=(), talams=(), composers=()):
+        self._raga = _NameIndex(ragas, RAGA_ALIASES)
+        self._talam = _NameIndex(talams, TALAM_ALIASES, strip_talam=True)
+        self._composer = _NameIndex(composers, COMPOSER_ALIASES)
+
+    def raga(self, token: str) -> str | None:
+        return lookup_raga(token) or self._raga.find(token)
+
+    def talam(self, token: str) -> str | None:
+        return lookup_talam(token) or self._talam.find(token)
+
+    def composer(self, token: str) -> str | None:
+        return lookup_composer(token) or self._composer.find(token)
 
 
 # ---------------------------------------------------------------------------
@@ -780,16 +877,6 @@ def parse_file(filepath: str) -> list[ConcertBlock]:
     return blocks
 
 
-def parse_description(text: str) -> list["ClassifiedLine"]:
-    """Classify setlist-like lines pasted from a video description or comment."""
-    parsed_lines = [
-        tokenize_line(line)
-        for line in text.splitlines()
-        if _is_setlist_line(line)
-    ]
-    return [classify_tokens(line) for line in parsed_lines]
-
-
 # ---------------------------------------------------------------------------
 # Token classifier
 # ---------------------------------------------------------------------------
@@ -807,38 +894,59 @@ class ClassifiedLine:
     is_rtp: bool
     raw: str
     confidence: float
+    # Per-token record of how classify_tokens read the line. roles[i] is
+    # "raga" / "talam" / "composer" when the token matched a known name,
+    # "skip" when it was deliberately ignored, and None when it is unrecognized.
+    tokens: list[str] = field(default_factory=list)
+    roles: list[str | None] = field(default_factory=list)
 
 
-def classify_tokens(parsed: ParsedLine) -> ClassifiedLine:
-    """Assign semantic roles to tokens: piece name, raga, talam, composer."""
+def classify_tokens(
+    parsed: ParsedLine,
+    lookups: "CatalogLookups | None" = None,
+) -> ClassifiedLine:
+    """Assign semantic roles to tokens: piece name, raga, talam, composer.
+
+    With lookups=None only the hardcoded alias dictionaries are used (the
+    behavior batch ingest relies on). Pass a CatalogLookups to also recognize
+    names from the database and spelling variants of them.
+    """
     tokens = parsed.tokens
     raga = None
     talam = None
     composer = None
     piece_candidates: list[str] = []
 
+    find_raga = lookups.raga if lookups else lookup_raga
+    find_composer = lookups.composer if lookups else lookup_composer
+    find_talam = lookups.talam if lookups else lookup_talam
+
     # Track which token indices have been claimed
     claimed: set[int] = set()
+    roles: list[str | None] = [None] * len(tokens)
 
-    # Pass 1: exact lookup for raga, talam, composer
+    # Pass 1: lookup for raga, talam, composer
     for i, tok in enumerate(tokens):
         if raga is None:
-            hit = lookup_raga(tok)
+            hit = find_raga(tok)
             if hit:
                 raga = hit
                 claimed.add(i)
+                roles[i] = "raga"
                 continue
         if composer is None:
-            hit = lookup_composer(tok)
+            hit = find_composer(tok)
             if hit:
                 composer = hit
                 claimed.add(i)
+                roles[i] = "composer"
                 continue
         if talam is None:
-            hit = lookup_talam(tok)
+            hit = find_talam(tok)
             if hit:
                 talam = hit
                 claimed.add(i)
+                roles[i] = "talam"
                 continue
 
     # Pass 2: unclaimed tokens become piece name candidates
@@ -849,15 +957,19 @@ def classify_tokens(parsed: ParsedLine) -> ClassifiedLine:
             if norm in ("varnam", "varna", "rtp", "mangalam", "slokam",
                         "viruttham", "viruttam", "tillana", "thillana",
                         "bhajan", "tiruppugazh", "thiruppugazh"):
+                roles[i] = "skip"
                 continue
             # Skip ragamalika swarams continuation tokens
             if re.match(r"^ragamalika\s+swarams?", tok, re.IGNORECASE):
+                roles[i] = "skip"
                 continue
             # Skip solfege patterns like "Ni Ri Ni Ri Ga Ma Ga Ri Sa"
             if re.match(r"^[SsRrGgMmPpDdNn][aāiī]?\s", tok) and len(tok.split()) > 4:
+                roles[i] = "skip"
                 continue
             # Skip "selection from" etc.
             if re.match(r"^selection\s+from", tok, re.IGNORECASE):
+                roles[i] = "skip"
                 continue
             piece_candidates.append(tok)
 
@@ -891,6 +1003,8 @@ def classify_tokens(parsed: ParsedLine) -> ClassifiedLine:
         is_rtp=parsed.is_rtp,
         raw=parsed.raw,
         confidence=confidence,
+        tokens=list(tokens),
+        roles=roles,
     )
 
 

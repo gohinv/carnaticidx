@@ -19,7 +19,7 @@ let concertDraftDetailCache = {};
 let concertArtistRowSeq = 0;
 let concertArtistTimers = {};
 let concertArtistSuggestionIdx = {};
-const KIND_OPTIONS = ['','krithi','varnam','padam','tillana','viruttam','slokam','mangalam','bhajan','rtp'];
+const KIND_OPTIONS = ['','krithi','varnam','padam','tillana','viruttam','slokam','mangalam','bhajan','rtp','alapana'];
 const ARTIST_ROLE_OPTIONS = ['main artist', 'accompanist'];
 
 // ---- Init ----
@@ -180,7 +180,7 @@ function renderDetail(d) {
         <div class="field">
           <label>Kind</label>
           <select id="kind-input">
-            ${['','krithi','varnam','padam','tillana','viruttam','slokam','mangalam','bhajan','rtp'].map(k =>
+            ${['','krithi','varnam','padam','tillana','viruttam','slokam','mangalam','bhajan','rtp','alapana'].map(k =>
               `<option value="${k}"${k===(d.parsed_kind||'')?'selected':''}>${k||'—'}</option>`
             ).join('')}
           </select>
