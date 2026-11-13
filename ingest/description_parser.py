@@ -11,6 +11,7 @@ steps that only make sense when looking at a whole description at once:
      composer) and use it to read the lines the classifier could not.
   4. Fold alapana lines into the song that follows in the same raga.
   5. Canonicalize kinds.
+  6. Collapse "Ragam" / "Tanam" / "Pallavi" lines into a single RTP item.
 """
 
 import re
@@ -206,6 +207,69 @@ def merge_alapanas(lines: list[ClassifiedLine]) -> list[ClassifiedLine]:
 
 
 # ---------------------------------------------------------------------------
+# 6. RTP sections
+# ---------------------------------------------------------------------------
+
+# Bare section names, matched on diacritic-free lowercase: ragam, tanam, pallavi.
+_RTP_PART_RE = re.compile(r"^(?:ra+gam|th?a+nam|pall?avi)$")
+
+
+def _is_rtp_part(line: ClassifiedLine) -> bool:
+    return (
+        not line.is_rtp
+        and bool(line.piece_name)
+        and bool(_RTP_PART_RE.match(normalize_for_match(line.piece_name)))
+    )
+
+
+def _raga_compatible(a: str | None, b: str | None) -> bool:
+    return not a or not b or _same_raga(a, b)
+
+
+def _combine_rtp(rtp: ClassifiedLine, part: ClassifiedLine | None = None) -> ClassifiedLine:
+    """Make `rtp` an RTP item, taking any missing details from `part`."""
+    raga = rtp.raga or (part.raga if part else None)
+    talam = rtp.talam or (part.talam if part else None)
+    # Only a composer the classifier recognized is kept: in a pallavi line the
+    # trailing text is the pallavi lyric, not a composer.
+    composer = rtp.composer or (part.composer if part else None)
+    timestamp = rtp.timestamp_seconds
+    if timestamp is None and part is not None:
+        timestamp = part.timestamp_seconds
+    return replace(
+        rtp,
+        piece_name="RTP",
+        kind="rtp",
+        is_rtp=True,
+        raga=raga,
+        talam=talam,
+        composer=composer,
+        timestamp_seconds=timestamp,
+        has_thani=rtp.has_thani or bool(part and part.has_thani),
+        confidence=_score_confidence("RTP", raga, talam, composer, "rtp", True),
+    )
+
+
+def merge_rtp_parts(lines: list[ClassifiedLine]) -> list[ClassifiedLine]:
+    """Collapse consecutive Ragam / Tanam / Pallavi lines into one RTP item.
+
+    The item starts at the first part's timestamp. A part that follows an
+    existing RTP line in the same raga is folded into it as well.
+    """
+    merged: list[ClassifiedLine] = []
+    for line in lines:
+        if not _is_rtp_part(line):
+            merged.append(line)
+            continue
+        previous = merged[-1] if merged else None
+        if previous is not None and previous.is_rtp and _raga_compatible(previous.raga, line.raga):
+            merged[-1] = _combine_rtp(previous, line)
+        else:
+            merged.append(_combine_rtp(line))
+    return merged
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -219,6 +283,8 @@ def parse_description(
         line = clean_line(raw)
         if _is_setlist_line(line):
             classified.append(classify_tokens(tokenize_line(line), catalog))
+
+    classified = merge_rtp_parts(classified)
 
     template = infer_template(classified)
     lines = [apply_template(line, template) for line in classified]
