@@ -17,12 +17,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from ingest.description_parser import parse_description  # noqa: E402
 from ingest.populate_db import (  # noqa: E402
+    PHONETIC_MIN_LEN,
+    CatalogLookups,
     lookup_composer,
     lookup_raga,
     lookup_talam,
     normalize_for_match,
-    parse_description,
+    phonetic_key,
 )
 
 load_dotenv()
@@ -357,8 +360,11 @@ def _resolve_named_entity(model, raw_name, lookup_fn=None):
     if canon:
         target = normalize_for_match(canon)
 
+    target_key = phonetic_key(target)
+
     matches = []
     suffix_matches = []
+    phonetic_matches = []
     for row in db.session.scalars(db.select(model)).all():
         if not _usable_meta_name(row.name):
             continue
@@ -369,10 +375,17 @@ def _resolve_named_entity(model, raw_name, lookup_fn=None):
         elif norm.endswith(f' {target}'):
             # e.g. parsed "ata" -> unique "Khanda Jati Ata"
             suffix_matches.append(row)
+        elif len(target_key) >= PHONETIC_MIN_LEN and phonetic_key(norm) == target_key:
+            # spelling variant, e.g. parsed "Muthuswamy" -> "Muthuswami"
+            phonetic_matches.append(row)
 
     row = _prefer_canonical_row(matches) or (
         _prefer_canonical_row(suffix_matches) if len(suffix_matches) == 1 else None
     )
+    if not row and phonetic_matches:
+        # Only trust a spelling match when every candidate is the same name.
+        if len({normalize_for_match(r.name) for r in phonetic_matches}) == 1:
+            row = _prefer_canonical_row(phonetic_matches)
     if not row:
         return None, raw_name
     return row.id, row.name
@@ -387,27 +400,48 @@ def _resolve_piece(piece_name, raga_id=None):
     if not target:
         return None
 
-    candidates = []
-    for piece in db.session.scalars(
+    pieces = db.session.scalars(
         db.select(Piece).options(
             joinedload(Piece.raga),
             joinedload(Piece.talam),
             joinedload(Piece.composer),
         )
-    ).unique().all():
-        if normalize_for_match(piece.name) == target:
-            candidates.append(piece)
+    ).unique().all()
+    aliases = None
 
-    if not candidates:
-        for alias in db.session.scalars(
+    def load_aliases():
+        return db.session.scalars(
             db.select(PieceAlias).options(
                 joinedload(PieceAlias.piece).joinedload(Piece.raga),
                 joinedload(PieceAlias.piece).joinedload(Piece.talam),
                 joinedload(PieceAlias.piece).joinedload(Piece.composer),
             )
-        ).unique().all():
-            if normalize_for_match(alias.alias) == target and alias.piece:
-                candidates.append(alias.piece)
+        ).unique().all()
+
+    candidates = [p for p in pieces if normalize_for_match(p.name) == target]
+
+    if not candidates:
+        aliases = load_aliases()
+        candidates = [
+            a.piece for a in aliases
+            if a.piece and normalize_for_match(a.alias) == target
+        ]
+
+    # Last resort: a unique transliteration variant of an existing piece name
+    # or alias (e.g. "Thyagaraja" vs "Tyagaraja" style spelling differences).
+    phonetic = False
+    if not candidates:
+        target_key = phonetic_key(target)
+        if len(target_key) >= PHONETIC_MIN_LEN:
+            phonetic = True
+            candidates = [
+                p for p in pieces if phonetic_key(p.name) == target_key
+            ]
+            if not candidates:
+                candidates = [
+                    a.piece for a in aliases
+                    if a.piece and phonetic_key(a.alias) == target_key
+                ]
 
     if not candidates:
         return None
@@ -420,9 +454,36 @@ def _resolve_piece(piece_name, raga_id=None):
             # Don't link a piece from a different raga when we already know the raga.
             return None
 
+    if phonetic and len({normalize_for_match(p.name) for p in candidates}) > 1:
+        # Several differently-spelled pieces share this key; don't guess.
+        return None
+
     if len(candidates) == 1:
         return candidates[0]
     return _prefer_canonical_row(candidates)
+
+
+def _load_catalog_lookups():
+    """Raga/talam/composer names from the database, for recognizing parsed tokens."""
+    def names(model):
+        return [
+            name for name in db.session.scalars(db.select(model.name)).all()
+            if _usable_meta_name(name)
+        ]
+
+    return CatalogLookups(
+        ragas=names(Raga),
+        talams=names(Talam),
+        composers=names(Composer),
+    )
+
+
+def _setlist_kind(line, piece, raga_name, composer_name):
+    """Kind from the line, else the linked piece, else krithi for a full raga + composer entry."""
+    kind = line.kind or (piece.kind if piece else None)
+    if not kind and raga_name and composer_name:
+        kind = 'krithi'
+    return (kind or '').lower() or None
 
 
 TURNSTILE_VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify'
@@ -551,7 +612,7 @@ def parse_contribution_setlist():
     if len(description) > 100_000:
         return jsonify({"error": "description is too long"}), 400
 
-    parsed_lines = parse_description(description)
+    parsed_lines = parse_description(description, _load_catalog_lookups())
     setlist = []
     for line in parsed_lines:
         if line.timestamp_seconds is None or not line.piece_name:
@@ -588,7 +649,7 @@ def parse_contribution_setlist():
             "talam_name": talam_name,
             "composer_id": composer_id,
             "composer_name": composer_name,
-            "kind": (line.kind or (piece.kind if piece else None) or '').lower() or None,
+            "kind": _setlist_kind(line, piece, raga_name, composer_name),
         })
 
     if not setlist:
