@@ -40,7 +40,7 @@ async function loadSetlist(piece) {
   pieceResultsCount.textContent = '';
 
   try {
-    const res = await fetch(`${API}/pieces/get-setlist/${encodeURIComponent(piece.name)}`);
+    const res = await fetch(`${API}/pieces/get-setlist/${piece.id}`);
     const data = await res.json();
     pieceLoading.style.display = 'none';
 

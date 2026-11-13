@@ -790,15 +790,15 @@ def autocomplete_composers(prefix: str):
         for c in rows
     ])
 
-# Find renditions of a piece
-@app.route('/pieces/get-setlist/<string:piece_name>', methods=['GET'])
+# Find renditions of one piece. Names are not unique across raga/composer/talam.
+@app.route('/pieces/get-setlist/<int:piece_id>', methods=['GET'])
 @limiter.limit("30 per minute")
-def get_setlist(piece_name: str):
+def get_setlist(piece_id: int):
     rows = db.session.execute(
         db.select(SetlistItem, Piece, Concert)
         .join(Piece, SetlistItem.piece_id == Piece.id)
         .join(Concert, SetlistItem.concert_id == Concert.id)
-        .where(Piece.name == piece_name)
+        .where(Piece.id == piece_id)
     ).all()
 
     concert_ids = {c.id for _, _, c in rows}
