@@ -10,17 +10,18 @@ const concertDetailLink = document.getElementById('concert-detail-link');
 const setlistEl = document.getElementById('setlist');
 const setlistEmpty = document.getElementById('setlist-empty');
 
-// use cache or fetch concert metadata
+// use cache when duration is already known, otherwise fetch the concert row
 async function getConcertMeta(concertId) {
   const cached = concertMetaCache[concertId];
-  if (cached?.duration_seconds != null) return cached;
+  if (cached && Object.prototype.hasOwnProperty.call(cached, 'duration_seconds')) {
+    return cached;
+  }
 
   try {
-    const res = await fetch(`${API}/concerts/get-metadata/${concertId}`);
-    if (!res.ok) return cached || {};
-    const meta = await res.json();
-    cacheConcertMeta(meta);
-    return { ...cached, ...meta };
+    const rows = await apiGet('concerts', [concertId]);
+    if (!rows.length) return cached || {};
+    cacheConcertMeta({ ...rows[0], url: youtubeUrl(rows[0].youtube_id) });
+    return concertMetaCache[concertId];
   } catch {
     return cached || {};
   }
@@ -31,19 +32,23 @@ async function showConcert(concertId) {
   searchView.style.display = 'none';
   concertView.style.display = 'block';
   concertDetail.style.display = 'none';
+  setlistEmpty.textContent = 'No setlist available.';
   setlistEmpty.style.display = 'none';
   concertDetailLoading.style.display = 'block';
   setlistEl.innerHTML = '';
   window.scrollTo(0, 0);
 
   try {
-    const [setlistRes, artistsRes, concertMeta] = await Promise.all([
-      fetch(`${API}/concerts/setlist/${concertId}`),
-      fetch(`${API}/concerts/get-artists/${concertId}`),
-      getConcertMeta(concertId),
+    const id = Number(concertId);
+    const [setlist, artistCache, concertMeta] = await Promise.all([
+      apiListAll('setlist-items', { concert_id: id }, { order_by: 'sequence_number' }),
+      fetchArtistsByConcert([{ concert_id: id }]),
+      getConcertMeta(id),
+      loadLookups(),
     ]);
-    const setlist = await setlistRes.json();
-    const artists = artistsRes.ok ? await artistsRes.json() : [];
+    const pieceRows = await apiGet('pieces', setlist.map(item => item.piece_id));
+    const pieceById = new Map(pieceRows.map(piece => [piece.id, piece]));
+    const artists = artistCache[id] || [];
 
     concertDetailLoading.style.display = 'none';
     concertDetail.style.display = 'block';
@@ -84,10 +89,19 @@ async function showConcert(concertId) {
 
     // duration is gap until next timestamp
     setlist.forEach((item, idx) => {
+      const piece = item.piece_id != null ? pieceById.get(item.piece_id) : null;
+      const meta = pieceMeta(piece);
+      const view = {
+        name: piece ? piece.name : null,
+        raga: meta.raga,
+        talam: meta.talam,
+        composer: meta.composer,
+        timestamp_seconds: item.timestamp_seconds,
+      };
       const nextTs = setlist[idx + 1]?.timestamp_seconds
         ?? concertMeta.duration_seconds
         ?? null;
-      setlistEl.appendChild(buildSetlistRow(item, idx + 1, concertMeta, nextTs));
+      setlistEl.appendChild(buildSetlistRow(view, idx + 1, concertMeta, nextTs));
     });
   } catch {
     concertDetailLoading.style.display = 'none';

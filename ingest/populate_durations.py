@@ -35,7 +35,8 @@ def fetch_durations(youtube, video_ids: list[str]) -> dict[str, int]:
 
 def main():
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'app'))
-    from app import app, db, Concert
+    from app import app
+    from dbmodel import db, Concert
 
     youtube = get_youtube_client()
 
