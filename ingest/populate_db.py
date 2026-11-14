@@ -1244,7 +1244,8 @@ def wipe(dry_run: bool = False) -> None:
     from sqlalchemy import text
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
-    from app import app, db
+    from app import app
+    from dbmodel import db
 
     table_list = ", ".join(_WIPE_TABLES)
     sql = f"TRUNCATE TABLE {table_list} RESTART IDENTITY CASCADE"
@@ -1278,7 +1279,8 @@ def seed_master(dry_run: bool = False, verbose: bool = False) -> None:
     import csv
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
-    from app import app, db, Raga, Talam, Composer, Piece
+    from app import app
+    from dbmodel import db, Raga, Talam, Composer, Piece
 
     csv_path = Path(__file__).parent / "pieces_master.csv"
     rows = []
@@ -1517,7 +1519,8 @@ def ingest(
 ):
     """Ingest concerts from cleaned_data.txt, matching setlist lines against the seeded master."""
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
-    from app import app, db, Concert, Artist, ConcertArtist, Raga, Talam, Composer, Piece, SetlistItem, PieceAlias, IngestDraft
+    from app import app
+    from dbmodel import db, Concert, Artist, ConcertArtist, Raga, Talam, Composer, Piece, SetlistItem, PieceAlias, IngestDraft
 
     blocks = parse_file(filepath)
     if sample is not None:

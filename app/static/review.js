@@ -21,26 +21,404 @@ let concertArtistTimers = {};
 let concertArtistSuggestionIdx = {};
 const KIND_OPTIONS = ['','krithi','varnam','padam','tillana','viruttam','slokam','mangalam','bhajan','rtp','alapana'];
 const ARTIST_ROLE_OPTIONS = ['main artist', 'accompanist'];
+const lookup = {
+  ragas: { byId: new Map(), byName: new Map() },
+  composers: { byId: new Map(), byName: new Map() },
+  talams: { byId: new Map(), byName: new Map() },
+};
+
+// ---- API client ----
+async function apiSend(method, url, body) {
+  const opts = { method };
+  if (body !== undefined) {
+    opts.headers = { 'Content-Type': 'application/json' };
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(url, opts);
+  const text = await res.text();
+  let data = null;
+  if (text) {
+    try { data = JSON.parse(text); } catch { data = null; }
+  }
+  if (!res.ok) {
+    let message = (data && data.error) || (text && text.trim()) || res.statusText || `HTTP ${res.status}`;
+    if (message.length > 500) message = message.slice(0, 500);
+    const err = new Error(message);
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
+async function apiList(entity, params = {}) {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined) continue;
+    if (key === 'limit' || key === 'offset' || key === 'order_by') {
+      if (value != null && value !== '') qs.set(key, String(value));
+      continue;
+    }
+    const values = Array.isArray(value) ? value : [value];
+    for (const item of values) {
+      if (item === undefined) continue;
+      qs.append(key, item == null ? 'null' : String(item));
+    }
+  }
+  const query = qs.toString();
+  const data = await apiSend('GET', `/${entity}/${query ? `?${query}` : ''}`);
+  if (!Array.isArray(data)) throw new Error('Expected a list');
+  return data;
+}
+
+async function apiListAll(entity, params = {}) {
+  const pageSize = 2000;
+  const all = [];
+  const seen = new Set();
+  let offset = 0;
+  for (;;) {
+    const page = await apiList(entity, { ...params, limit: pageSize, offset });
+    if (!page.length || seen.has(page[0].id)) return all;
+    for (const row of page) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      all.push(row);
+    }
+    if (page.length < pageSize) return all;
+    offset += page.length;
+  }
+}
+
+function uniqueIds(ids) {
+  const unique = [];
+  const seen = new Set();
+  for (const id of ids || []) {
+    if (id == null || id === '') continue;
+    const key = String(id);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(id);
+  }
+  return unique;
+}
+
+async function apiGet(entity, ids) {
+  const unique = uniqueIds(ids);
+  if (!unique.length) return [];
+  const out = [];
+  const chunkSize = 200;
+  for (let i = 0; i < unique.length; i += chunkSize) {
+    const chunk = unique.slice(i, i + chunkSize);
+    const rows = await apiList(entity, { id: chunk, limit: chunk.length });
+    out.push(...rows);
+  }
+  return out;
+}
+
+async function apiListIn(entity, column, ids, extra = {}) {
+  const unique = uniqueIds(ids);
+  if (!unique.length) return [];
+  const chunkSize = 100;
+  const groups = [];
+  for (let i = 0; i < unique.length; i += chunkSize) {
+    groups.push(apiListAll(entity, { ...extra, [column]: unique.slice(i, i + chunkSize) }));
+  }
+  const pages = await Promise.all(groups);
+  return pages.flat();
+}
+
+async function apiAutocomplete(entity, prefix, limit) {
+  const qs = new URLSearchParams();
+  if (limit != null) qs.set('limit', String(limit));
+  const query = qs.toString();
+  return apiSend(
+    'GET',
+    `/${entity}/autocomplete/${encodeURIComponent(prefix)}${query ? `?${query}` : ''}`,
+  );
+}
+
+async function apiCreate(entity, body) {
+  return apiSend('POST', `/${entity}/`, body);
+}
+
+async function apiUpdate(entity, id, body) {
+  return apiSend('PUT', `/${entity}/${id}`, body);
+}
+
+async function apiWorkflow(name, body) {
+  return apiSend('POST', `/workflows/${name}`, body === undefined ? undefined : body);
+}
+
+function indexById(rows) {
+  const map = new Map();
+  for (const row of rows || []) map.set(row.id, row);
+  return map;
+}
+
+function countBy(rows, key) {
+  const counts = new Map();
+  for (const row of rows || []) counts.set(row[key], (counts.get(row[key]) || 0) + 1);
+  return counts;
+}
+
+function cmpText(a, b) {
+  const as = a == null ? '' : String(a);
+  const bs = b == null ? '' : String(b);
+  if (as < bs) return -1;
+  if (as > bs) return 1;
+  return 0;
+}
+
+function cmpSequence(a, b) {
+  const as = a.sequence_number;
+  const bs = b.sequence_number;
+  if (as == null && bs == null) return (a.id || 0) - (b.id || 0);
+  if (as == null) return 1;
+  if (bs == null) return -1;
+  if (as !== bs) return as - bs;
+  return (a.id || 0) - (b.id || 0);
+}
+
+function namesFor(entity) {
+  if (entity === 'ragas') return ragas;
+  if (entity === 'composers') return composers;
+  if (entity === 'talams') return talams;
+  return null;
+}
+
+function rememberLookup(entity, row) {
+  const bucket = lookup[entity];
+  if (!bucket || !row) return;
+  bucket.byId.set(row.id, row.name);
+  bucket.byName.set(row.name, row.id);
+  const names = namesFor(entity);
+  if (names && !names.includes(row.name)) {
+    names.push(row.name);
+    names.sort(cmpText);
+  }
+}
+
+function indexLookup(entity, rows) {
+  const bucket = lookup[entity];
+  bucket.byId.clear();
+  bucket.byName.clear();
+  for (const row of rows) {
+    bucket.byId.set(row.id, row.name);
+    bucket.byName.set(row.name, row.id);
+  }
+}
+
+function lookupName(entity, id) {
+  if (id == null) return null;
+  const name = lookup[entity]?.byId.get(id);
+  return name == null ? null : name;
+}
+
+function namedLookup(entity, id, fallback) {
+  if (id == null) return fallback ?? null;
+  const name = lookup[entity]?.byId.get(id);
+  return name != null ? name : (fallback ?? null);
+}
+
+async function resolveNamedId(entity, name) {
+  if (name == null || name === '') return null;
+  const bucket = lookup[entity];
+  if (bucket.byName.has(name)) return bucket.byName.get(name);
+  try {
+    const created = await apiCreate(entity, { name });
+    rememberLookup(entity, created);
+    return created.id;
+  } catch (err) {
+    if (err.status !== 409) throw err;
+    const rows = await apiList(entity, { name, limit: 50 });
+    const exact = (rows || []).find(row => row.name === name);
+    if (!exact) throw err;
+    rememberLookup(entity, exact);
+    return exact.id;
+  }
+}
+
+// ---- Summary adapters (old review JSON shapes) ----
+function pieceSummary(piece) {
+  if (!piece) return null;
+  return {
+    id: piece.id,
+    name: piece.name,
+    kind: piece.kind,
+    raga: lookupName('ragas', piece.raga_id),
+    composer: lookupName('composers', piece.composer_id),
+    talam: lookupName('talams', piece.talam_id),
+    raga_id: piece.raga_id,
+    composer_id: piece.composer_id,
+    talam_id: piece.talam_id,
+  };
+}
+
+function concertSummary(concert) {
+  if (!concert) return null;
+  return {
+    id: concert.id,
+    youtube_id: concert.youtube_id,
+    title: concert.title,
+    year: concert.year,
+    venue: concert.venue,
+    duration_seconds: concert.duration_seconds,
+    url: `https://www.youtube.com/watch?v=${concert.youtube_id}`,
+  };
+}
+
+function draftSummary(d, concertTitle) {
+  return {
+    id: d.id,
+    youtube_id: d.youtube_id,
+    sequence_number: d.sequence_number,
+    timestamp_seconds: d.timestamp_seconds,
+    raw_line: d.raw_line,
+    parsed_piece: d.parsed_piece,
+    parsed_raga: d.parsed_raga,
+    parsed_talam: d.parsed_talam,
+    parsed_composer: d.parsed_composer,
+    parsed_kind: d.parsed_kind,
+    confidence: d.confidence == null ? 0 : d.confidence,
+    status: d.status,
+    concert_title: concertTitle ?? null,
+  };
+}
+
+function neighbourFromDraft(d) {
+  const piece = d.parsed_piece ? {
+    name: d.parsed_piece,
+    raga: d.parsed_raga || null,
+    composer: d.parsed_composer || null,
+    talam: d.parsed_talam || null,
+    kind: d.parsed_kind || null,
+  } : null;
+  return {
+    id: d.id,
+    sequence_number: d.sequence_number,
+    timestamp_seconds: d.timestamp_seconds,
+    piece_id: null,
+    piece,
+  };
+}
+
+function setlistItemSummary(si, piece) {
+  return {
+    id: si.id,
+    concert_id: si.concert_id,
+    sequence_number: si.sequence_number,
+    timestamp_seconds: si.timestamp_seconds,
+    piece_id: si.piece_id,
+    piece: piece ? pieceSummary(piece) : null,
+  };
+}
+
+function concertArtistSummary(ca, artist) {
+  return {
+    id: ca.id,
+    artist_id: artist ? artist.id : ca.artist_id,
+    artist_name: artist ? artist.name : null,
+    instrument: ca.instrument,
+    role: ca.role,
+  };
+}
+
+function concertArtistDraftSummary(row, artist) {
+  return {
+    id: row.id,
+    artist_id: row.artist_id,
+    artist_name: artist ? artist.name : row.artist_name,
+    submitted_artist_name: row.artist_name,
+    instrument: row.instrument,
+    role: row.role,
+  };
+}
+
+function setlistItemDraftSummary(item, piece) {
+  const linked = piece || null;
+  return {
+    id: item.id,
+    concert_draft_id: item.concert_draft_id,
+    piece_id: item.piece_id,
+    piece_name: linked ? linked.name : item.piece_name,
+    submitted_piece_name: item.piece_name,
+    raga_id: item.raga_id,
+    raga_name: namedLookup('ragas', item.raga_id, item.raga_name),
+    talam_id: item.talam_id,
+    talam_name: namedLookup('talams', item.talam_id, item.talam_name),
+    composer_id: item.composer_id,
+    composer_name: namedLookup('composers', item.composer_id, item.composer_name),
+    kind: linked ? linked.kind : item.kind,
+    timestamp_seconds: item.timestamp_seconds,
+    sequence_number: item.sequence_number,
+  };
+}
+
+function httpError(message, status) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
 
 // ---- Init ----
 async function init() {
-  [ragas, composers, talams] = await Promise.all([
-    fetch('/review/lookup/ragas').then(r => r.json()),
-    fetch('/review/lookup/composers').then(r => r.json()),
-    fetch('/review/lookup/talams').then(r => r.json()),
-  ]);
+  try {
+    await loadLookups();
+  } catch (err) {
+    toast(err.message || 'Failed to load lookups', true);
+  }
   await loadDrafts();
 }
 
+async function loadLookups() {
+  const [ragaRows, composerRows, talamRows] = await Promise.all([
+    apiListAll('ragas', { order_by: 'name' }),
+    apiListAll('composers', { order_by: 'name' }),
+    apiListAll('talams', { order_by: 'name' }),
+  ]);
+  indexLookup('ragas', ragaRows);
+  indexLookup('composers', composerRows);
+  indexLookup('talams', talamRows);
+  ragas = ragaRows.map(row => row.name);
+  composers = composerRows.map(row => row.name);
+  talams = talamRows.map(row => row.name);
+}
+
+async function fetchReviewDrafts() {
+  const rows = await apiList('ingest-drafts', {
+    status: 'needs_review',
+    order_by: 'youtube_id',
+    limit: 200,
+  });
+  rows.sort((a, b) => {
+    const yt = cmpText(a.youtube_id, b.youtube_id);
+    if (yt) return yt;
+    return cmpSequence(a, b);
+  });
+  const ytIds = [...new Set(rows.map(d => d.youtube_id).filter(Boolean))];
+    const concerts = await apiListIn('concerts', 'youtube_id', ytIds);
+  const titleByYt = new Map(concerts.map(c => [c.youtube_id, c.title]));
+  const items = rows.map(d => draftSummary(d, titleByYt.get(d.youtube_id) ?? null));
+  return { items, total: items.length };
+}
+
 async function loadDrafts() {
-  const res = await fetch('/review/drafts?per_page=200&page=1');
-  const data = await res.json();
-  drafts = data.items;
-  draftsTotal = data.total;
-  currentIdx = -1;
-  updateDraftStats();
-  renderList();
-  if (drafts.length > 0) selectDraft(0);
+  try {
+    const data = await fetchReviewDrafts();
+    drafts = data.items;
+    draftsTotal = data.total;
+    currentIdx = -1;
+    updateDraftStats();
+    renderList();
+    if (drafts.length > 0) await selectDraft(0);
+  } catch (err) {
+    drafts = [];
+    draftsTotal = 0;
+    currentIdx = -1;
+    updateDraftStats();
+    const el = document.getElementById('stats');
+    if (el) el.textContent = err.message || 'Failed to load drafts';
+    toast(err.message || 'Failed to load drafts', true);
+  }
 }
 
 function updateDraftStats() {
@@ -56,8 +434,13 @@ function updateDraftStats() {
 }
 
 async function refillDraftQueue() {
-  const res = await fetch('/review/drafts?per_page=200&page=1');
-  const data = await res.json();
+  let data;
+  try {
+    data = await fetchReviewDrafts();
+  } catch (err) {
+    toast(err.message || 'Failed to load drafts', true);
+    return;
+  }
   draftsTotal = data.total;
   if (data.items.length === 0) {
     drafts = [];
@@ -73,6 +456,31 @@ async function refillDraftQueue() {
   updateDraftStats();
   renderList();
   await selectDraft(0);
+}
+
+async function loadDraftDetail(summary) {
+  const youtubeId = summary.youtube_id;
+  const [concertRows, neighbourRows] = await Promise.all([
+    youtubeId ? apiList('concerts', { youtube_id: youtubeId, limit: 1 }) : Promise.resolve([]),
+    youtubeId
+      ? apiListAll('ingest-drafts', { youtube_id: youtubeId, order_by: 'sequence_number' })
+      : Promise.resolve([]),
+  ]);
+  let draft = (neighbourRows || []).find(row => row.id === summary.id);
+  if (!draft) {
+    const rows = await apiGet('ingest-drafts', [summary.id]);
+    draft = rows[0];
+  }
+  if (!draft) throw httpError('Draft not found', 404);
+  const concert = concertRows[0] || null;
+  const neighbours = (neighbourRows || []).map(neighbourFromDraft);
+  neighbours.sort(cmpSequence);
+  return {
+    ...draftSummary(draft, concert ? concert.title : null),
+    concert_id: concert ? concert.id : null,
+    timestamp_fmt: fmtTs(draft.timestamp_seconds),
+    neighbours,
+  };
 }
 
 // ---- Tab switching ----
@@ -118,9 +526,15 @@ async function selectDraft(idx) {
   selectedPieceId = null;
   renderList();
   const d = drafts[idx];
-  const res = await fetch(`/review/drafts/${d.id}`);
-  const detail = await res.json();
-  renderDetail(detail);
+  if (!d) return;
+  try {
+    const detail = await loadDraftDetail(d);
+    if (currentIdx !== idx) return;
+    renderDetail(detail);
+  } catch (err) {
+    if (currentIdx !== idx) return;
+    toast(err.message || 'Failed to load draft', true);
+  }
 }
 
 // ---- Detail pane ----
@@ -221,9 +635,13 @@ async function onPieceSearch(q) {
   clearTimeout(searchTimer);
   if (!q || q.length < 2) { hideSuggestions(); return; }
   searchTimer = setTimeout(async () => {
-    const res = await fetch(`/review/pieces/search?q=${encodeURIComponent(q)}&limit=8`);
-    const items = await res.json();
-    showSuggestions(items);
+    try {
+      const items = (await apiAutocomplete('pieces', q, 8)).map(pieceSummary);
+      showSuggestions(items);
+    } catch (err) {
+      hideSuggestions();
+      toast(err.message || 'Piece search failed', true);
+    }
   }, 180);
 }
 
@@ -279,6 +697,7 @@ function pickSuggestion(id, name) {
 // ---- Actions ----
 async function resolveAction() {
   const d = drafts[currentIdx];
+  if (!d) return;
   const pieceName = document.getElementById('piece-search')?.value?.trim();
   const body = {
     piece_name: pieceName || d.parsed_piece,
@@ -289,25 +708,25 @@ async function resolveAction() {
   };
   if (selectedPieceId) body.piece_id = selectedPieceId;
 
-  const res = await fetch(`/review/drafts/${d.id}/resolve`, {
-    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body),
-  });
-  if (res.ok) {
-    const data = await res.json();
+  try {
+    const data = await apiWorkflow(`resolve-ingest-draft/${d.id}`, body);
     toast(`✓ Resolved → ${data.piece.name}`);
     await removeCurrent();
-  } else {
-    const err = await res.json();
-    toast(err.error || 'Error', true);
+  } catch (err) {
+    toast(err.message || 'Error', true);
   }
 }
 
 async function statusAction(action) {
   const d = drafts[currentIdx];
-  const res = await fetch(`/review/drafts/${d.id}/${action}`, { method: 'POST' });
-  if (res.ok) {
+  if (!d) return;
+  const status = action === 'skip' ? 'skipped' : 'rejected';
+  try {
+    await apiUpdate('ingest-drafts', d.id, { status });
     toast(action === 'skip' ? 'Skipped' : 'Rejected');
     await removeCurrent();
+  } catch (err) {
+    toast(err.message || 'Error', true);
   }
 }
 
@@ -355,18 +774,28 @@ async function loadConcertDrafts() {
   if (stats) stats.textContent = 'Loading…';
 
   try {
-    const res = await fetch('/review/concert-drafts?status=submitted&per_page=100');
-    const data = await res.json();
-    concertDrafts = data.items || [];
-    concertDraftsTotal = data.total || 0;
+    const rows = await apiListAll('concert-drafts', { status: 'submitted', order_by: 'id' });
+    const ids = rows.map(d => d.id);
+    const [artistRows, setlistRows] = await Promise.all([
+      apiListIn('concert-artist-drafts', 'concert_draft_id', ids),
+      apiListIn('setlist-item-drafts', 'concert_draft_id', ids),
+    ]);
+    const artistCounts = countBy(artistRows, 'concert_draft_id');
+    const setlistCounts = countBy(setlistRows, 'concert_draft_id');
+    concertDrafts = rows.map(d => ({
+      ...d,
+      artist_count: artistCounts.get(d.id) || 0,
+      setlist_item_count: setlistCounts.get(d.id) || 0,
+    }));
+    concertDraftsTotal = concertDrafts.length;
     concertDraftDetailCache = {};
     if (expandedConcertDraftId && !concertDrafts.some(d => d.id === expandedConcertDraftId)) {
       expandedConcertDraftId = null;
     }
     updateContributionStats();
     renderConcertDraftCards();
-  } catch {
-    if (list) list.innerHTML = '<div class="empty"><span>⚠️</span>Could not load contributions</div>';
+  } catch (err) {
+    if (list) list.innerHTML = `<div class="empty"><span>⚠️</span>${escHtml(err.message || 'Could not load contributions')}</div>`;
     if (stats) stats.textContent = 'Error loading';
   }
 }
@@ -420,6 +849,46 @@ function renderConcertDraftCards() {
   }).join('');
 }
 
+async function loadConcertDraftDetail(draftId) {
+  const draftsFound = await apiGet('concert-drafts', [draftId]);
+  const draft = draftsFound[0];
+  if (!draft) throw httpError('Not found', 404);
+  const [artistRows, setlistRows] = await Promise.all([
+    apiListAll('concert-artist-drafts', { concert_draft_id: draftId }),
+    apiListAll('setlist-item-drafts', {
+      concert_draft_id: draftId,
+      order_by: 'sequence_number',
+    }),
+  ]);
+  const [pieceRows, artistCatalog] = await Promise.all([
+    apiGet('pieces', setlistRows.map(item => item.piece_id)),
+    apiGet('artists', artistRows.map(row => row.artist_id)),
+  ]);
+  const pieceById = indexById(pieceRows);
+  const artistById = indexById(artistCatalog);
+  const artists = artistRows.map(row => concertArtistDraftSummary(
+    row,
+    row.artist_id ? artistById.get(row.artist_id) : null,
+  ));
+  const setlist = setlistRows.map(item => setlistItemDraftSummary(
+    item,
+    item.piece_id ? pieceById.get(item.piece_id) : null,
+  ));
+  return {
+    id: draft.id,
+    youtube_id: draft.youtube_id,
+    title: draft.title,
+    year: draft.year,
+    venue: draft.venue,
+    duration_seconds: draft.duration_seconds,
+    status: draft.status,
+    artist_count: artists.length,
+    setlist_item_count: setlist.length,
+    artists,
+    setlist,
+  };
+}
+
 async function toggleConcertDraft(draftId) {
   if (expandedConcertDraftId === draftId) {
     expandedConcertDraftId = null;
@@ -432,12 +901,10 @@ async function toggleConcertDraft(draftId) {
 
   if (!concertDraftDetailCache[draftId]) {
     try {
-      const res = await fetch(`/review/concert-drafts/${draftId}`);
-      if (!res.ok) throw new Error('failed');
-      concertDraftDetailCache[draftId] = await res.json();
-    } catch {
+      concertDraftDetailCache[draftId] = await loadConcertDraftDetail(draftId);
+    } catch (err) {
       const body = document.getElementById(`contrib-body-${draftId}`);
-      if (body) body.innerHTML = '<div class="contrib-loading" style="color:#c06060">Failed to load draft details</div>';
+      if (body) body.innerHTML = `<div class="contrib-loading" style="color:#c06060">${escHtml(err.message || 'Failed to load draft details')}</div>`;
       return;
     }
   }
@@ -546,9 +1013,13 @@ async function onDraftSetlistPieceSearch(itemId, q) {
     return;
   }
   setlistPieceTimers[`sid-${itemId}`] = setTimeout(async () => {
-    const res = await fetch(`/review/pieces/search?q=${encodeURIComponent(q)}&limit=8`);
-    const items = await res.json();
-    showSetlistSuggestions(itemId, items, 'sid');
+    try {
+      const items = (await apiAutocomplete('pieces', q, 8)).map(pieceSummary);
+      showSetlistSuggestions(itemId, items, 'sid');
+    } catch (err) {
+      hideSetlistSuggestions(itemId, 'sid');
+      toast(err.message || 'Piece search failed', true);
+    }
   }, 180);
 }
 
@@ -567,6 +1038,13 @@ async function unlinkDraftSetlistPiece(itemId) {
   await saveDraftSetlistItem(itemId, true);
 }
 
+function draftStatusFor(draftId) {
+  const detail = concertDraftDetailCache[draftId];
+  if (detail && detail.status) return detail.status;
+  const summary = concertDrafts.find(d => d.id === draftId);
+  return summary ? summary.status : null;
+}
+
 async function saveDraftSetlistItem(itemId, unlinking=false) {
   const row = document.getElementById(`sid-row-${itemId}`);
   const seq = parseInt(document.getElementById(`sid-seq-${itemId}`)?.value, 10);
@@ -576,42 +1054,63 @@ async function saveDraftSetlistItem(itemId, unlinking=false) {
   if (ts === null) { toast('Invalid timestamp (use seconds or m:ss)', true); return; }
   if (!pieceInput) { toast('Piece name is required', true); return; }
 
+  const concertDraftId = row?.dataset.concertDraftId
+    ? parseInt(row.dataset.concertDraftId, 10)
+    : expandedConcertDraftId;
+  const status = draftStatusFor(concertDraftId);
+  if (status && status !== 'submitted') {
+    toast(`Only submitted drafts can be edited; status is '${status}'`, true);
+    return;
+  }
+
   const body = {
     sequence_number: seq,
     timestamp_seconds: ts,
     piece_name: pieceInput,
   };
 
-  if (unlinking || !row?.dataset.pieceId) {
-    body.piece_id = null;
-  } else {
-    body.piece_id = parseInt(row.dataset.pieceId, 10);
-  }
+  const linkedId = (!unlinking && row?.dataset.pieceId)
+    ? parseInt(row.dataset.pieceId, 10)
+    : null;
 
-  const res = await fetch(`/review/setlist-drafts/${itemId}`, {
-    method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body),
-  });
-  if (res.ok) {
+  try {
+    if (linkedId) {
+      const [pieceRows, existingRows] = await Promise.all([
+        apiGet('pieces', [linkedId]),
+        apiGet('setlist-item-drafts', [itemId]),
+      ]);
+      const piece = pieceRows[0];
+      if (!piece) { toast('piece_id not found', true); return; }
+      const existing = existingRows[0];
+      const summary = pieceSummary(piece);
+      body.piece_id = piece.id;
+      body.piece_name = piece.name;
+      body.raga_id = piece.raga_id;
+      body.talam_id = piece.talam_id;
+      body.composer_id = piece.composer_id;
+      body.raga_name = summary.raga || existing?.raga_name || null;
+      body.talam_name = summary.talam || existing?.talam_name || null;
+      body.composer_name = summary.composer || existing?.composer_name || null;
+      body.kind = piece.kind || existing?.kind || null;
+    } else {
+      body.piece_id = null;
+    }
+
+    await apiUpdate('setlist-item-drafts', itemId, body);
     toast('✓ Draft setlist item saved');
     row?.classList.remove('dirty');
-    const concertDraftId = row?.dataset.concertDraftId
-      ? parseInt(row.dataset.concertDraftId, 10)
-      : expandedConcertDraftId;
     if (concertDraftId) await refreshConcertDraftDetail(concertDraftId);
-  } else {
-    const err = await res.json().catch(() => ({}));
-    toast(err.error || 'Save failed', true);
+  } catch (err) {
+    toast(err.message || 'Save failed', true);
   }
 }
 
 async function refreshConcertDraftDetail(draftId) {
   try {
-    const res = await fetch(`/review/concert-drafts/${draftId}`);
-    if (!res.ok) throw new Error('failed');
-    concertDraftDetailCache[draftId] = await res.json();
+    const detail = await loadConcertDraftDetail(draftId);
+    concertDraftDetailCache[draftId] = detail;
     // Keep summary counts in sync
     const summary = concertDrafts.find(d => d.id === draftId);
-    const detail = concertDraftDetailCache[draftId];
     if (summary && detail) {
       summary.artist_count = (detail.artists || []).length;
       summary.setlist_item_count = (detail.setlist || []).length;
@@ -619,6 +1118,7 @@ async function refreshConcertDraftDetail(draftId) {
       summary.year = detail.year;
       summary.venue = detail.venue;
       summary.duration_seconds = detail.duration_seconds;
+      summary.status = detail.status;
     }
     if (expandedConcertDraftId === draftId) renderConcertDraftCards();
   } catch {
@@ -631,15 +1131,14 @@ async function approveConcertDraft(draftId) {
   const label = draft?.title || `draft #${draftId}`;
   if (!window.confirm(`Approve and publish “${label}”?`)) return;
 
-  const res = await fetch(`/review/concert-drafts/${draftId}/approve`, { method: 'POST' });
-  const data = await res.json().catch(() => ({}));
-  if (res.ok) {
+  try {
+    const data = await apiWorkflow(`approve-concert-draft/${draftId}`);
     toast(`✓ Published concert #${data.concert?.id ?? '?'}`);
     if (expandedConcertDraftId === draftId) expandedConcertDraftId = null;
     delete concertDraftDetailCache[draftId];
     await loadConcertDrafts();
-  } else {
-    toast(data.error || 'Approve failed', true);
+  } catch (err) {
+    toast(err.message || 'Approve failed', true);
   }
 }
 
@@ -648,15 +1147,20 @@ async function rejectConcertDraft(draftId) {
   const label = draft?.title || `draft #${draftId}`;
   if (!window.confirm(`Reject “${label}”?`)) return;
 
-  const res = await fetch(`/review/concert-drafts/${draftId}/reject`, { method: 'POST' });
-  const data = await res.json().catch(() => ({}));
-  if (res.ok) {
+  const status = draftStatusFor(draftId);
+  if (status && status !== 'submitted') {
+    toast(`Only submitted drafts can be rejected; status is '${status}'`, true);
+    return;
+  }
+
+  try {
+    await apiUpdate('concert-drafts', draftId, { status: 'rejected' });
     toast('Rejected');
     if (expandedConcertDraftId === draftId) expandedConcertDraftId = null;
     delete concertDraftDetailCache[draftId];
     await loadConcertDrafts();
-  } else {
-    toast(data.error || 'Reject failed', true);
+  } catch (err) {
+    toast(err.message || 'Reject failed', true);
   }
 }
 
@@ -704,9 +1208,20 @@ async function onPieceFilterChange() {
 }
 
 async function loadIncompletePieceList() {
-  const res = await fetch('/review/pieces/incomplete?per_page=100');
-  const data = await res.json();
-  renderPieceResults(data.items, `${data.total} incomplete`);
+  try {
+    const [missingRaga, missingComposer, missingTalam] = await Promise.all([
+      apiListAll('pieces', { raga_id: null, order_by: 'id' }),
+      apiListAll('pieces', { composer_id: null, order_by: 'id' }),
+      apiListAll('pieces', { talam_id: null, order_by: 'id' }),
+    ]);
+    const byId = new Map();
+    for (const piece of [...missingRaga, ...missingComposer, ...missingTalam]) byId.set(piece.id, piece);
+    const items = [...byId.values()].map(pieceSummary).sort((a, b) => cmpText(a.name, b.name));
+    renderPieceResults(items, `${items.length} incomplete`);
+  } catch (err) {
+    const box = document.getElementById('piece-edit-results');
+    if (box) box.innerHTML = `<div style="color:#c06060;font-size:12px;padding:8px 0">${escHtml(err.message || 'Failed to load pieces')}</div>`;
+  }
 }
 
 function onPieceEditSearch(q) {
@@ -724,13 +1239,17 @@ function onPieceEditSearch(q) {
 }
 
 async function runPieceSearch(q) {
-  const incompleteOnly = document.getElementById('piece-incomplete-only')?.checked;
-  const res = await fetch(`/review/pieces/search?q=${encodeURIComponent(q)}&limit=30`);
-  let items = await res.json();
-  if (incompleteOnly) {
-    items = items.filter(p => !p.raga || !p.composer || !p.talam);
+  try {
+    const incompleteOnly = document.getElementById('piece-incomplete-only')?.checked;
+    let items = (await apiAutocomplete('pieces', q, 30)).map(pieceSummary);
+    if (incompleteOnly) {
+      items = items.filter(p => !p.raga || !p.composer || !p.talam);
+    }
+    renderPieceResults(items, `${items.length} result${items.length === 1 ? '' : 's'}`);
+  } catch (err) {
+    const box = document.getElementById('piece-edit-results');
+    if (box) box.innerHTML = `<div style="color:#c06060;font-size:12px;padding:8px 0">${escHtml(err.message || 'Search failed')}</div>`;
   }
-  renderPieceResults(items, `${items.length} result${items.length === 1 ? '' : 's'}`);
 }
 
 function renderPieceResults(items, label) {
@@ -748,15 +1267,56 @@ function renderPieceResults(items, label) {
       </div>`).join('')}`;
 }
 
+async function loadPieceDetail(pieceId) {
+  const pieceRows = await apiGet('pieces', [pieceId]);
+  const piece = pieceRows[0];
+  if (!piece) throw httpError('Piece not found', 404);
+  const [aliases, items] = await Promise.all([
+    apiListAll('piece-aliases', { piece_id: pieceId }),
+    apiListAll('setlist-items', { piece_id: pieceId }),
+  ]);
+  const concerts = await apiGet('concerts', items.map(item => item.concert_id));
+  const concertById = indexById(concerts);
+  const appearances = items.map(si => {
+    const concert = concertById.get(si.concert_id);
+    return {
+      setlist_item_id: si.id,
+      concert_id: si.concert_id,
+      concert_title: concert ? concert.title : null,
+      concert_year: concert ? concert.year : null,
+      sequence_number: si.sequence_number,
+      timestamp_seconds: si.timestamp_seconds,
+      timestamp_fmt: fmtTs(si.timestamp_seconds),
+      url: concert
+        ? `https://www.youtube.com/watch?v=${concert.youtube_id}&t=${si.timestamp_seconds}`
+        : '#',
+    };
+  }).sort((a, b) => {
+    const ay = a.concert_year;
+    const by = b.concert_year;
+    if (ay == null && by != null) return 1;
+    if (by == null && ay != null) return -1;
+    if (ay != null && by != null && ay !== by) return by - ay;
+    return cmpText(a.concert_title, b.concert_title);
+  });
+  return {
+    ...pieceSummary(piece),
+    aliases: aliases.map(alias => alias.alias),
+    appearances,
+  };
+}
+
 async function selectPieceForEdit(pieceId) {
   pieceEditId = pieceId;
   document.querySelectorAll('#piece-edit-results .result-item').forEach(el => {
     el.classList.toggle('active', el.getAttribute('onclick') === `selectPieceForEdit(${pieceId})`);
   });
-  const res = await fetch(`/review/pieces/${pieceId}`);
-  if (!res.ok) { toast('Piece not found', true); return; }
-  const p = await res.json();
-  renderPieceEditForm(p);
+  try {
+    const p = await loadPieceDetail(pieceId);
+    renderPieceEditForm(p);
+  } catch (err) {
+    toast(err.status === 404 ? 'Piece not found' : (err.message || 'Piece not found'), true);
+  }
 }
 
 function renderPieceEditForm(p) {
@@ -821,23 +1381,24 @@ function clearPieceField(field) {
 
 async function savePieceEdit() {
   if (!pieceEditId) return;
-  const body = {
-    name: document.getElementById('pe-name')?.value?.trim(),
-    kind: document.getElementById('pe-kind')?.value || null,
-    raga: document.getElementById('pe-raga')?.value?.trim() || null,
-    composer: document.getElementById('pe-composer')?.value?.trim() || null,
-    talam: document.getElementById('pe-talam')?.value?.trim() || null,
-  };
-  const res = await fetch(`/review/pieces/${pieceEditId}`, {
-    method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body),
-  });
-  if (res.ok) {
+  const name = document.getElementById('pe-name')?.value?.trim();
+  if (!name) { toast('name cannot be empty', true); return; }
+  const kind = document.getElementById('pe-kind')?.value || null;
+  const ragaName = document.getElementById('pe-raga')?.value?.trim() || null;
+  const composerName = document.getElementById('pe-composer')?.value?.trim() || null;
+  const talamName = document.getElementById('pe-talam')?.value?.trim() || null;
+  try {
+    const [raga_id, composer_id, talam_id] = await Promise.all([
+      resolveNamedId('ragas', ragaName),
+      resolveNamedId('composers', composerName),
+      resolveNamedId('talams', talamName),
+    ]);
+    await apiUpdate('pieces', pieceEditId, { name, kind, raga_id, composer_id, talam_id });
     toast('✓ Piece saved');
     await selectPieceForEdit(pieceEditId);
     onPieceFilterChange();
-  } else {
-    const err = await res.json().catch(() => ({}));
-    toast(err.error || 'Save failed', true);
+  } catch (err) {
+    toast(err.message || 'Save failed', true);
   }
 }
 
@@ -853,7 +1414,7 @@ function initSetlistsPanel() {
     panel.innerHTML = `
       <div class="panel-shell">
         <div class="panel-search">
-          <input class="search-box" id="concert-search" placeholder="Search concerts by title, venue, or YouTube id…"
+          <input class="search-box" id="concert-search" placeholder="Search concerts by title…"
             oninput="onConcertSearch(this.value)" autocomplete="off">
         </div>
         <div class="edit-layout">
@@ -880,18 +1441,21 @@ function onConcertSearch(q) {
     return;
   }
   concertSearchTimer = setTimeout(async () => {
-    const res = await fetch(`/review/concerts/search?q=${encodeURIComponent(q)}&limit=25`);
-    const items = await res.json();
-    if (!box) return;
-    if (!items.length) {
-      box.innerHTML = '<div style="color:#444;font-size:12px;padding:8px 0">No concerts found</div>';
-      return;
+    try {
+      const items = (await apiAutocomplete('concerts', q, 25)).map(concertSummary);
+      if (!box) return;
+      if (!items.length) {
+        box.innerHTML = '<div style="color:#444;font-size:12px;padding:8px 0">No concerts found</div>';
+        return;
+      }
+      box.innerHTML = items.map(c => `
+        <div class="result-item${c.id === setlistConcertId ? ' active' : ''}" onclick="loadConcertSetlist(${c.id})">
+          <div class="result-title">${escHtml(c.title || c.youtube_id)}</div>
+          <div class="result-sub">${[c.year, c.venue, c.youtube_id].filter(Boolean).join(' · ')}</div>
+        </div>`).join('');
+    } catch (err) {
+      if (box) box.innerHTML = `<div style="color:#c06060;font-size:12px;padding:8px 0">${escHtml(err.message || 'Search failed')}</div>`;
     }
-    box.innerHTML = items.map(c => `
-      <div class="result-item${c.id === setlistConcertId ? ' active' : ''}" onclick="loadConcertSetlist(${c.id})">
-        <div class="result-title">${escHtml(c.title || c.youtube_id)}</div>
-        <div class="result-sub">${[c.year, c.venue, c.youtube_id].filter(Boolean).join(' · ')}</div>
-      </div>`).join('');
   }, 180);
 }
 
@@ -900,10 +1464,41 @@ async function loadConcertSetlist(concertId) {
   document.querySelectorAll('#concert-results .result-item').forEach(el => {
     el.classList.toggle('active', el.getAttribute('onclick') === `loadConcertSetlist(${concertId})`);
   });
-  const res = await fetch(`/review/concerts/${concertId}/setlist`);
-  if (!res.ok) { toast('Concert not found', true); return; }
-  const data = await res.json();
-  renderSetlistEditor(data);
+  try {
+    const concertRows = await apiGet('concerts', [concertId]);
+    const concert = concertRows[0];
+    if (!concert) { toast('Concert not found', true); return; }
+    const [items, artistLinks] = await Promise.all([
+      apiListAll('setlist-items', { concert_id: concertId, order_by: 'sequence_number' }),
+      apiListAll('concert-artists', { concert_id: concertId }),
+    ]);
+    const [pieceRows, artistRows] = await Promise.all([
+      apiGet('pieces', items.map(item => item.piece_id)),
+      apiGet('artists', artistLinks.map(link => link.artist_id)),
+    ]);
+    const pieceById = indexById(pieceRows);
+    const artistById = indexById(artistRows);
+    const artists = artistLinks.map(link => concertArtistSummary(
+      link,
+      link.artist_id ? artistById.get(link.artist_id) : null,
+    )).sort((a, b) => {
+      const ar = a.role === 'main artist' ? 0 : 1;
+      const br = b.role === 'main artist' ? 0 : 1;
+      if (ar !== br) return ar - br;
+      return cmpText(a.artist_name, b.artist_name);
+    });
+    const setlistItems = items.map(si => setlistItemSummary(
+      si,
+      si.piece_id ? pieceById.get(si.piece_id) : null,
+    ));
+    renderSetlistEditor({
+      concert: concertSummary(concert),
+      artists,
+      items: setlistItems,
+    });
+  } catch (err) {
+    toast(err.message || 'Concert not found', true);
+  }
 }
 
 function renderSetlistEditor(data) {
@@ -1077,9 +1672,13 @@ async function onConcertArtistSearch(rowId, q) {
     return;
   }
   concertArtistTimers[rowId] = setTimeout(async () => {
-    const res = await fetch(`/artists/autocomplete/${encodeURIComponent(q)}`);
-    const items = await res.json();
-    showConcertArtistSuggestions(rowId, items);
+    try {
+      const items = await apiAutocomplete('artists', q);
+      showConcertArtistSuggestions(rowId, items);
+    } catch (err) {
+      hideConcertArtistSuggestions(rowId);
+      toast(err.message || 'Artist search failed', true);
+    }
   }, 180);
 }
 
@@ -1183,29 +1782,32 @@ async function saveConcertMetadata() {
     }
   }
 
-  const body = {
-    title,
-    year,
-    venue: venue || null,
-    duration_seconds,
-    youtube_id: youtubeId,
-    artists,
-  };
-
-  const res = await fetch(`/review/concerts/${setlistConcertId}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (res.ok) {
-    toast('✓ Concert saved');
-    await loadConcertSetlist(setlistConcertId);
-    const q = document.getElementById('concert-search')?.value?.trim();
-    if (q && q.length >= 2) onConcertSearch(q);
-  } else {
-    const err = await res.json().catch(() => ({}));
-    toast(err.error || 'Save failed', true);
+  const concertId = setlistConcertId;
+  try {
+    await apiUpdate('concerts', concertId, {
+      title,
+      year,
+      venue: venue || null,
+      duration_seconds,
+      youtube_id: youtubeId,
+    });
+  } catch (err) {
+    toast(err.message || 'Save failed', true);
+    return;
   }
+
+  try {
+    await apiWorkflow(`replace-concert-lineup/${concertId}`, { artists });
+  } catch (err) {
+    toast(err.message || 'Save failed', true);
+    await loadConcertSetlist(concertId);
+    return;
+  }
+
+  toast('✓ Concert saved');
+  await loadConcertSetlist(concertId);
+  const q = document.getElementById('concert-search')?.value?.trim();
+  if (q && q.length >= 2) onConcertSearch(q);
 }
 
 function markSetlistDirty(id) {
@@ -1232,9 +1834,13 @@ async function onSetlistPieceSearch(itemId, q) {
     return;
   }
   setlistPieceTimers[itemId] = setTimeout(async () => {
-    const res = await fetch(`/review/pieces/search?q=${encodeURIComponent(q)}&limit=8`);
-    const items = await res.json();
-    showSetlistSuggestions(itemId, items);
+    try {
+      const items = (await apiAutocomplete('pieces', q, 8)).map(pieceSummary);
+      showSetlistSuggestions(itemId, items);
+    } catch (err) {
+      hideSetlistSuggestions(itemId);
+      toast(err.message || 'Piece search failed', true);
+    }
   }, 180);
 }
 
@@ -1330,16 +1936,13 @@ async function saveSetlistItem(itemId, unlinking=false) {
     return;
   }
 
-  const res = await fetch(`/review/setlist/${itemId}`, {
-    method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body),
-  });
-  if (res.ok) {
+  try {
+    await apiUpdate('setlist-items', itemId, body);
     toast('✓ Setlist item saved');
     row?.classList.remove('dirty');
     if (setlistConcertId) await loadConcertSetlist(setlistConcertId);
-  } else {
-    const err = await res.json().catch(() => ({}));
-    toast(err.error || 'Save failed', true);
+  } catch (err) {
+    toast(err.message || 'Save failed', true);
   }
 }
 
