@@ -12,7 +12,7 @@ const concertEmpty = document.getElementById('concert-empty-state');
 createAutocomplete({
   input: artistInput,
   list: artistAcList,
-  fetchUrl: (q) => `${API}/artists/autocomplete/${encodeURIComponent(q)}`,
+  fetchItems: (q) => apiAutocomplete('artists', q),
   renderItem: (li, item) => {
     const name = document.createElement('div');
     name.className = 'ac-name';
@@ -25,7 +25,16 @@ createAutocomplete({
   },
 });
 
-// fetch concerts where artist is main
+// year ascending, nulls last, then id
+function compareConcertYear(a, b) {
+  if (a.year == null && b.year == null) return a.id - b.id;
+  if (a.year == null) return 1;
+  if (b.year == null) return -1;
+  if (a.year !== b.year) return a.year - b.year;
+  return a.id - b.id;
+}
+
+// concerts where this artist is a main artist
 async function loadConcerts(artist) {
   concertResultsSection.style.display = 'block';
   concertResultsTitle.textContent = artist.name;
@@ -36,8 +45,13 @@ async function loadConcerts(artist) {
   concertResultsCount.textContent = '';
 
   try {
-    const res = await fetch(`${API}/concerts/find/${encodeURIComponent(artist.name)}`);
-    const data = await res.json();
+    const links = await apiListAll('concert-artists', {
+      artist_id: artist.id,
+      role: 'main artist',
+    });
+    const ids = dedupeIds(links.map(link => link.concert_id));
+    const data = await apiGet('concerts', ids);
+    data.sort(compareConcertYear);
     concertLoading.style.display = 'none';
 
     if (!data.length) {
@@ -48,7 +62,7 @@ async function loadConcerts(artist) {
 
     concertResultsCount.textContent = `${data.length} concert${data.length !== 1 ? 's' : ''}`;
     data.forEach(c => {
-      cacheConcertMeta(c);
+      cacheConcertMeta({ ...c, url: youtubeUrl(c.youtube_id) });
       concertGrid.appendChild(buildConcertTile(c));
     });
   } catch {

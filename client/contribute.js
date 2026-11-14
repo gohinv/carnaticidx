@@ -91,13 +91,14 @@ function setPrefillStatus(msg, kind = '') {
 }
 
 // autocomplete that remembers selected entity id
-function wireEntityAutocomplete({ input, list, fetchUrl, onPick, onClear, renderItem }) {
+function wireEntityAutocomplete({ input, list, fetchUrl, fetchItems, onPick, onClear, renderItem }) {
   let selectedId = null;
 
   const ac = createAutocomplete({
     input,
     list,
     fetchUrl,
+    fetchItems,
     renderItem,
     onSelect: (item) => {
       selectedId = item.id;
@@ -345,23 +346,31 @@ function addSetlistRow(prefill = {}) {
   const linker = wireEntityAutocomplete({
     input: pieceInput,
     list,
-    fetchUrl: (q) => `${API}/pieces/autocomplete/${encodeURIComponent(q)}`,
+    fetchItems: async (q) => {
+      await loadLookups();
+      const res = await fetch(`${API}/pieces/autocomplete/${encodeURIComponent(q)}`);
+      if (!res.ok) throw new Error('autocomplete failed');
+      return res.json();
+    },
     renderItem: (li, item) => {
       const name = document.createElement('div');
       name.className = 'ac-name';
       name.textContent = item.name;
       const meta = document.createElement('div');
       meta.className = 'ac-meta';
-      meta.textContent = formatPieceMeta(item);
+      // autocomplete rows have ids only; names come from the lookup cache
+      const names = pieceMeta(item);
+      meta.textContent = formatPieceMeta(names);
       li.appendChild(name);
       li.appendChild(meta);
     },
     onPick: (item) => {
       status.textContent = 'Linked to existing piece';
       status.classList.remove('new');
-      linkMetadataFromPiece(raga, item, 'raga', 'raga_id', ragaInput, 'raga');
-      linkMetadataFromPiece(talam, item, 'talam', 'talam_id', talamInput, 'talam');
-      linkMetadataFromPiece(composer, item, 'composer', 'composer_id', composerInput, 'composer');
+      const names = pieceMeta(item);
+      linkMetadataFromPiece(raga, { ...item, raga: names.raga }, 'raga', 'raga_id', ragaInput, 'raga');
+      linkMetadataFromPiece(talam, { ...item, talam: names.talam }, 'talam', 'talam_id', talamInput, 'talam');
+      linkMetadataFromPiece(composer, { ...item, composer: names.composer }, 'composer', 'composer_id', composerInput, 'composer');
     },
     onClear: () => {
       status.textContent = 'New piece (will be reviewed)';
@@ -493,15 +502,9 @@ prefillSetlistBtn.addEventListener('click', async () => {
   setPrefillStatus('Parsing setlist…');
 
   try {
-    const res = await fetch(`${API}/contributions/parse_setlist`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ description }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      setPrefillStatus(data.error || 'Could not parse a setlist from this text.', 'err');
-      return;
+    const data = await apiWorkflow('parse-setlist', { description });
+    if (!Array.isArray(data.setlist)) {
+      throw new Error('Could not parse a setlist from this text.');
     }
 
     contribSetlistEl.innerHTML = '';
@@ -513,8 +516,12 @@ prefillSetlistBtn.addEventListener('click', async () => {
       `Prefilled ${data.setlist.length} setlist ${data.setlist.length === 1 ? 'item' : 'items'}. Review and edit them below.`,
       'ok',
     );
-  } catch {
-    setPrefillStatus('Could not reach the server. Is it running?', 'err');
+  } catch (err) {
+    if (err instanceof TypeError) {
+      setPrefillStatus('Could not reach the server. Is it running?', 'err');
+    } else {
+      setPrefillStatus(err.message || 'Could not parse a setlist from this text.', 'err');
+    }
   } finally {
     prefillSetlistBtn.disabled = false;
   }
@@ -611,17 +618,7 @@ contributeForm.addEventListener('submit', async (e) => {
   setContribStatus('Submitting…');
 
   try {
-    const res = await fetch(`${API}/contributions/create_concert_draft`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      setContribStatus(data.error || 'Submission failed.', 'err');
-      resetTurnstile();
-      return;
-    }
+    const data = await apiWorkflow('submit-contribution', payload);
     setContribStatus(`Submitted for review (draft #${data.id}).`, 'ok');
     contributeForm.reset();
     contribArtistsEl.innerHTML = '';
@@ -633,8 +630,12 @@ contributeForm.addEventListener('submit', async (e) => {
     addArtistRow({ role: 'main artist' });
     addSetlistRow({ sequence_number: 1, timestamp: '0:00' });
     resetTurnstile();
-  } catch {
-    setContribStatus('Could not reach the server. Is it running?', 'err');
+  } catch (err) {
+    if (err instanceof TypeError) {
+      setContribStatus('Could not reach the server. Is it running?', 'err');
+    } else {
+      setContribStatus(err.message || 'Submission failed.', 'err');
+    }
     resetTurnstile();
   } finally {
     contribSubmit.disabled = false;
