@@ -11,9 +11,9 @@ const pieceEmpty = document.getElementById('piece-empty-state');
 
 const filterRadios = document.querySelectorAll('input[name="piece-filter-type"]');
 const pieceInputLabel = document.getElementById('piece-input-label');
-const artistFilter = document.getElementById('artist-filter');
-const artistInput = document.getElementById('artist-input');
-const artistAcList = document.getElementById('artist-ac-list');
+const pieceArtistFilter = document.getElementById('piece-artist-filter');
+const pieceArtistInput = document.getElementById('piece-artist-input');
+const pieceArtistAcList = document.getElementById('piece-artist-ac-list');
 
 // per-filter config: which entity the primary autocomplete searches
 const FILTER_CONFIG = {
@@ -56,14 +56,14 @@ const pieceAutocomplete = createAutocomplete({
   onSelect: (item) => {
     pieceInput.value = item.name;
     searchState.selected = item;
-    artistFilter.style.display = 'block';
+    pieceArtistFilter.style.display = 'block';
     runSearch();
   },
 });
 
-const artistAutocomplete = createAutocomplete({
-  input: artistInput,
-  list: artistAcList,
+const pieceArtistAutocomplete = createAutocomplete({
+  input: pieceArtistInput,
+  list: pieceArtistAcList,
   fetchItems: (q) => apiAutocomplete('artists', q),
   renderItem: (li, item) => {
     const name = document.createElement('div');
@@ -72,15 +72,15 @@ const artistAutocomplete = createAutocomplete({
     li.appendChild(name);
   },
   onSelect: (artist) => {
-    artistInput.value = artist.name;
+    pieceArtistInput.value = artist.name;
     searchState.artist = artist;
     runSearch();
   },
 });
 
 // clearing the artist field removes the artist filter
-artistInput.addEventListener('input', () => {
-  if (artistInput.value.trim() === '' && searchState.artist) {
+pieceArtistInput.addEventListener('input', () => {
+  if (pieceArtistInput.value.trim() === '' && searchState.artist) {
     searchState.artist = null;
     runSearch();
   }
@@ -92,14 +92,14 @@ filterRadios.forEach(radio => radio.addEventListener('change', () => {
   pieceInputLabel.textContent = cfg.label;
   pieceInput.placeholder = cfg.placeholder;
   pieceInput.value = '';
-  artistInput.value = '';
+  pieceArtistInput.value = '';
   searchState.selected = null;
   searchState.artist = null;
-  artistFilter.style.display = 'none';
+  pieceArtistFilter.style.display = 'none';
   pieceResultsSection.style.display = 'none';
   searchSeq++;
   pieceAutocomplete.close();
-  artistAutocomplete.close();
+  pieceArtistAutocomplete.close();
 }));
 
 // gap until the next timestamp in the same concert, else until concert end
