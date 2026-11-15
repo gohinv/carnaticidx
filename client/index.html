@@ -25,15 +25,33 @@
   <!-- SEARCH VIEW -->
   <section id="search-view">
     <div class="tabs" role="tablist">
-      <button class="tab active" role="tab" data-tab="pieces">Pieces</button>
+      <button class="tab active" role="tab" data-tab="pieces">Renditions</button>
       <button class="tab" role="tab" data-tab="concerts">Concerts</button>
       <button class="tab" role="tab" data-tab="contribute">Contribute</button>
     </div>
 
     <!-- PIECES TAB -->
     <div class="tab-panel active" data-panel="pieces">
+      <div class="filter-wrapper">
+        <span class="search-label" id="piece-filter-label">Search by</span>
+        <div class="filter-radios" role="radiogroup" aria-labelledby="piece-filter-label">
+          <label class="filter-radio">
+            <input type="radio" name="piece-filter-type" value="name" checked />
+            <span>Piece</span>
+          </label>
+          <label class="filter-radio">
+            <input type="radio" name="piece-filter-type" value="raga" />
+            <span>Raga</span>
+          </label>
+          <label class="filter-radio">
+            <input type="radio" name="piece-filter-type" value="composer" />
+            <span>Composer</span>
+          </label>
+        </div>
+      </div>
+
       <div class="search-wrapper">
-        <label class="search-label" for="piece-input">Piece</label>
+        <label class="search-label" for="piece-input" id="piece-input-label">Piece</label>
         <input
           id="piece-input"
           type="text"
@@ -42,6 +60,18 @@
           placeholder="Begin typing a piece name…"
         />
         <ul id="piece-ac-list" class="ac-list" role="listbox"></ul>
+      </div>
+
+      <div class="search-wrapper artist-filter" id="piece-artist-filter" style="display:none">
+        <label class="search-label" for="piece-artist-input">Filter by artist (optional)</label>
+        <input
+          id="piece-artist-input"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Begin typing an artist name…"
+        />
+        <ul id="piece-artist-ac-list" class="ac-list" role="listbox"></ul>
       </div>
 
       <div id="piece-results-section" style="display:none">

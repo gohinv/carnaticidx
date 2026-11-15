@@ -95,6 +95,70 @@ main {
   position: relative;
 }
 
+.filter-wrapper {
+  margin-bottom: 1.25rem;
+}
+
+.filter-radios {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.filter-radio {
+  position: relative;
+  cursor: pointer;
+}
+
+.filter-radio input {
+  position: absolute;
+  opacity: 0;
+  inset: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.filter-radio span {
+  display: block;
+  padding: 0.55rem 1.4rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 0.95rem;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.filter-radio:hover span { border-color: var(--accent-dim); }
+
+.filter-radio input:checked + span {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.filter-radio input:focus-visible + span {
+  outline: 2px solid var(--accent-dim);
+  outline-offset: 2px;
+}
+
+.artist-filter {
+  margin-top: 1.25rem;
+}
+
+.rendition-piece-title {
+  font-size: 1.05rem;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rendition-piece-meta {
+  margin-top: 0.15rem;
+  font-size: 0.82rem;
+  color: var(--accent-dim);
+}
+
 .search-label {
   display: block;
   font-size: 0.75rem;

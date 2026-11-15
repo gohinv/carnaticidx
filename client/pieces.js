@@ -9,28 +9,112 @@ const renditionList = document.getElementById('rendition-list');
 const pieceLoading = document.getElementById('piece-loading');
 const pieceEmpty = document.getElementById('piece-empty-state');
 
-createAutocomplete({
+const filterRadios = document.querySelectorAll('input[name="piece-filter-type"]');
+const pieceInputLabel = document.getElementById('piece-input-label');
+const pieceArtistFilter = document.getElementById('piece-artist-filter');
+const pieceArtistInput = document.getElementById('piece-artist-input');
+const pieceArtistAcList = document.getElementById('piece-artist-ac-list');
+
+// per-filter config: which entity the primary autocomplete searches
+const FILTER_CONFIG = {
+  name: { entity: 'pieces', label: 'Piece', placeholder: 'Begin typing a piece name…' },
+  raga: { entity: 'ragas', label: 'Raga', placeholder: 'Begin typing a raga name…' },
+  composer: { entity: 'composers', label: 'Composer', placeholder: 'Begin typing a composer name…' },
+};
+
+// current search: selected primary item (piece/raga/composer) and optional artist
+const searchState = { selected: null, artist: null };
+let searchSeq = 0; // guards against stale responses from overlapping searches
+
+function currentFilterType() {
+  return document.querySelector('input[name="piece-filter-type"]:checked').value;
+}
+
+function currentFilter() {
+  return FILTER_CONFIG[currentFilterType()];
+}
+
+const pieceAutocomplete = createAutocomplete({
   input: pieceInput,
   list: pieceAcList,
   fetchItems: async (q) => {
     await loadLookups();
-    return apiAutocomplete('pieces', q);
+    return apiAutocomplete(currentFilter().entity, q);
   },
   renderItem: (li, item) => {
     const name = document.createElement('div');
     name.className = 'ac-name';
     name.textContent = item.name;
-    const meta = document.createElement('div');
-    meta.className = 'ac-meta';
-    meta.textContent = formatPieceMeta(pieceMeta(item));
     li.appendChild(name);
-    li.appendChild(meta);
+    if (currentFilterType() === 'name') {
+      const meta = document.createElement('div');
+      meta.className = 'ac-meta';
+      meta.textContent = formatPieceMeta(pieceMeta(item));
+      li.appendChild(meta);
+    }
   },
-  onSelect: (piece) => {
-    pieceInput.value = piece.name;
-    loadSetlist(piece);
+  onSelect: (item) => {
+    pieceInput.value = item.name;
+    searchState.selected = item;
+    searchState.artist = null;
+    pieceArtistInput.value = '';
+    pieceArtistFilter.style.display = 'block';
+    runSearch();
   },
 });
+
+const pieceArtistAutocomplete = createAutocomplete({
+  input: pieceArtistInput,
+  list: pieceArtistAcList,
+  fetchItems: (q) => apiAutocomplete('artists', q),
+  renderItem: (li, item) => {
+    const name = document.createElement('div');
+    name.className = 'ac-name';
+    name.textContent = item.name;
+    li.appendChild(name);
+  },
+  onSelect: (artist) => {
+    pieceArtistInput.value = artist.name;
+    searchState.artist = artist;
+    runSearch();
+  },
+});
+
+// drop the selection, artist filter and results (in-flight searches are ignored)
+function resetSearch() {
+  searchState.selected = null;
+  searchState.artist = null;
+  pieceArtistInput.value = '';
+  pieceArtistFilter.style.display = 'none';
+  pieceResultsSection.style.display = 'none';
+  searchSeq++;
+}
+
+// editing the primary field away from the selected name discards that selection
+pieceInput.addEventListener('input', () => {
+  if (searchState.selected && pieceInput.value !== searchState.selected.name) {
+    resetSearch();
+  }
+});
+
+// editing the artist field away from the selected artist removes the artist filter
+pieceArtistInput.addEventListener('input', () => {
+  if (searchState.artist && pieceArtistInput.value !== searchState.artist.name) {
+    searchState.artist = null;
+    runSearch();
+  }
+});
+
+// switching filter type resets the whole search
+filterRadios.forEach(radio => radio.addEventListener('change', () => {
+  const cfg = currentFilter();
+  pieceInputLabel.textContent = cfg.label;
+  pieceInput.placeholder = cfg.placeholder;
+  pieceInput.value = '';
+  resetSearch();
+  pieceAutocomplete.close();
+  pieceArtistAutocomplete.close();
+}));
 
 // gap until the next timestamp in the same concert, else until concert end
 function renditionDuration(item, concertItems, concert) {
@@ -48,27 +132,67 @@ function renditionDuration(item, concertItems, concert) {
   return delta > 0 ? delta : null;
 }
 
-// load all concerts where piece was performed
-async function loadSetlist(piece) {
+function setResultsHeading(selected, artist) {
+  const type = currentFilterType();
+  const byArtist = artist ? `by ${artist.name}` : '';
+  if (type === 'name') {
+    pieceResultsTitle.textContent = selected.name;
+    pieceResultsSubtitle.textContent =
+      [formatPieceMeta(pieceMeta(selected)), byArtist].filter(Boolean).join(' · ');
+  } else {
+    pieceResultsTitle.textContent = type === 'raga'
+      ? `Renditions of Raga ${selected.name}`
+      : `Composed by ${selected.name}`;
+    pieceResultsSubtitle.textContent = byArtist;
+  }
+}
+
+// load renditions for the selected piece/raga/composer, optionally limited to one artist
+async function runSearch() {
+  const selected = searchState.selected;
+  const artist = searchState.artist;
+  if (!selected) return;
+  const seq = ++searchSeq;
+  const type = currentFilterType();
+
   pieceResultsSection.style.display = 'block';
-  pieceResultsTitle.textContent = piece.name;
-  pieceResultsSubtitle.textContent = formatPieceMeta(pieceMeta(piece));
+  setResultsHeading(selected, artist);
   renditionList.innerHTML = '';
   pieceEmpty.style.display = 'none';
   pieceLoading.style.display = 'block';
   pieceResultsCount.textContent = '';
 
+  const showEmpty = (msg) => {
+    pieceLoading.style.display = 'none';
+    pieceEmpty.textContent = msg;
+    pieceEmpty.style.display = 'block';
+  };
+
   try {
     await loadLookups();
-    pieceResultsSubtitle.textContent = formatPieceMeta(pieceMeta(piece));
 
-    const renditions = await apiListAll('setlist-items', { piece_id: piece.id });
-    if (!renditions.length) {
-      pieceLoading.style.display = 'none';
-      pieceEmpty.textContent = 'No renditions found for this piece.';
-      pieceEmpty.style.display = 'block';
-      return;
+    // resolve the pieces covered by the selected filter value
+    let pieces;
+    if (type === 'name') pieces = [selected];
+    else if (type === 'raga') pieces = await apiListAll('pieces', { raga_id: selected.id });
+    else pieces = await apiListAll('pieces', { composer_id: selected.id });
+    if (seq !== searchSeq) return;
+    if (!pieces.length) return showEmpty('No renditions found.');
+    const pieceById = new Map(pieces.map(p => [p.id, p]));
+
+    // optional artist filter: restrict to concerts the artist performed in
+    const filters = { piece_id: pieces.map(p => p.id) };
+    if (artist) {
+      const lineup = await apiListAll('concert-artists', { artist_id: artist.id });
+      if (seq !== searchSeq) return;
+      const artistConcertIds = dedupeIds(lineup.map(ca => ca.concert_id));
+      if (!artistConcertIds.length) return showEmpty('No renditions found.');
+      filters.concert_id = artistConcertIds;
     }
+
+    const renditions = await apiListAll('setlist-items', filters);
+    if (seq !== searchSeq) return;
+    if (!renditions.length) return showEmpty('No renditions found.');
 
     const concertIds = dedupeIds(renditions.map(item => item.concert_id));
     const [concerts, concertItems, artistCache] = await Promise.all([
@@ -76,6 +200,7 @@ async function loadSetlist(piece) {
       apiListAll('setlist-items', { concert_id: concertIds }),
       fetchArtistsByConcert(renditions),
     ]);
+    if (seq !== searchSeq) return;
     pieceLoading.style.display = 'none';
 
     const concertById = new Map(concerts.map(c => [c.id, c]));
@@ -90,8 +215,11 @@ async function loadSetlist(piece) {
       list.sort((a, b) => a.sequence_number - b.sequence_number || a.id - b.id);
     });
 
+    // raga/composer searches span many pieces, so each card names its piece
+    const multiPiece = type !== 'name';
     const cards = renditions.map(item => {
       const concert = concertById.get(item.concert_id);
+      const piece = pieceById.get(item.piece_id);
       return {
         concert_id: item.concert_id,
         concert_title: concert?.title,
@@ -99,6 +227,8 @@ async function loadSetlist(piece) {
         concert_venue: concert?.venue,
         track_url: concert ? youtubeUrl(concert.youtube_id, item.timestamp_seconds) : null,
         duration_seconds: renditionDuration(item, itemsByConcert.get(item.concert_id), concert),
+        piece_name: multiPiece && piece ? piece.name : null,
+        piece_meta: multiPiece && piece ? formatPieceMeta(pieceMeta(piece)) : null,
       };
     });
 
@@ -106,9 +236,8 @@ async function loadSetlist(piece) {
     pieceResultsCount.textContent = `${cards.length} rendition${cards.length !== 1 ? 's' : ''}`;
     cards.forEach(r => renditionList.appendChild(buildRenditionCard(r, artistCache[r.concert_id] || [])));
   } catch {
-    pieceLoading.style.display = 'none';
-    pieceEmpty.textContent = 'Error loading renditions. Is the server running?';
-    pieceEmpty.style.display = 'block';
+    if (seq !== searchSeq) return;
+    showEmpty('Error loading renditions. Is the server running?');
   }
 }
 
@@ -120,23 +249,39 @@ function buildRenditionCard(r, artists = []) {
   const meta = document.createElement('div');
   meta.className = 'rendition-meta';
 
-  const title = document.createElement('a');
-  title.className = 'rendition-concert';
-  title.textContent = r.concert_title || 'Untitled Concert';
-  title.href = `#/concert/${r.concert_id}`;
-  meta.appendChild(title);
-
   const details = document.createElement('div');
   details.className = 'rendition-details';
-  if (r.concert_year) {
-    const yr = document.createElement('span');
-    yr.textContent = r.concert_year;
-    details.appendChild(yr);
+
+  if (r.piece_name) {
+    // raga/composer searches: the composition leads, year and artists are secondary
+    li.classList.add('rendition-card-piece');
+
+    const pieceTitle = document.createElement('div');
+    pieceTitle.className = 'rendition-piece-title';
+    pieceTitle.textContent = r.piece_name;
+    meta.appendChild(pieceTitle);
+
+    if (r.piece_meta) {
+      const pieceMetaLine = document.createElement('div');
+      pieceMetaLine.className = 'rendition-piece-meta';
+      pieceMetaLine.textContent = r.piece_meta;
+      meta.appendChild(pieceMetaLine);
+    }
+  } else {
+    // piece-name searches: the piece is already known, so the concert leads
+    const concertLink = document.createElement('a');
+    concertLink.className = 'rendition-concert';
+    concertLink.textContent = r.concert_title || 'Untitled Concert';
+    concertLink.href = `#/concert/${r.concert_id}`;
+    meta.appendChild(concertLink);
   }
-  if (artists.length) {
-    const artistLine = document.createElement('span');
-    artistLine.textContent = formatArtists(artists);
-    details.appendChild(artistLine);
+
+  // artists and year share one line, separated by the same dot as between artists
+  const line = [...artists.map(a => a.name), r.concert_year].filter(Boolean).join(' · ');
+  if (line) {
+    const lineEl = document.createElement('span');
+    lineEl.textContent = line;
+    details.appendChild(lineEl);
   }
   meta.appendChild(details);
 
