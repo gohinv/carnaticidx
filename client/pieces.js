@@ -56,6 +56,8 @@ const pieceAutocomplete = createAutocomplete({
   onSelect: (item) => {
     pieceInput.value = item.name;
     searchState.selected = item;
+    searchState.artist = null;
+    pieceArtistInput.value = '';
     pieceArtistFilter.style.display = 'block';
     runSearch();
   },
@@ -78,9 +80,26 @@ const pieceArtistAutocomplete = createAutocomplete({
   },
 });
 
-// clearing the artist field removes the artist filter
+// drop the selection, artist filter and results (in-flight searches are ignored)
+function resetSearch() {
+  searchState.selected = null;
+  searchState.artist = null;
+  pieceArtistInput.value = '';
+  pieceArtistFilter.style.display = 'none';
+  pieceResultsSection.style.display = 'none';
+  searchSeq++;
+}
+
+// editing the primary field away from the selected name discards that selection
+pieceInput.addEventListener('input', () => {
+  if (searchState.selected && pieceInput.value !== searchState.selected.name) {
+    resetSearch();
+  }
+});
+
+// editing the artist field away from the selected artist removes the artist filter
 pieceArtistInput.addEventListener('input', () => {
-  if (pieceArtistInput.value.trim() === '' && searchState.artist) {
+  if (searchState.artist && pieceArtistInput.value !== searchState.artist.name) {
     searchState.artist = null;
     runSearch();
   }
@@ -92,12 +111,7 @@ filterRadios.forEach(radio => radio.addEventListener('change', () => {
   pieceInputLabel.textContent = cfg.label;
   pieceInput.placeholder = cfg.placeholder;
   pieceInput.value = '';
-  pieceArtistInput.value = '';
-  searchState.selected = null;
-  searchState.artist = null;
-  pieceArtistFilter.style.display = 'none';
-  pieceResultsSection.style.display = 'none';
-  searchSeq++;
+  resetSearch();
   pieceAutocomplete.close();
   pieceArtistAutocomplete.close();
 }));
@@ -120,17 +134,16 @@ function renditionDuration(item, concertItems, concert) {
 
 function setResultsHeading(selected, artist) {
   const type = currentFilterType();
-  const byArtist = artist ? ` by ${artist.name}` : '';
+  const byArtist = artist ? `by ${artist.name}` : '';
   if (type === 'name') {
     pieceResultsTitle.textContent = selected.name;
     pieceResultsSubtitle.textContent =
-      formatPieceMeta(pieceMeta(selected)) + (artist ? (formatPieceMeta(pieceMeta(selected)) ? ' · ' : '') + `by ${artist.name}` : '');
-  } else if (type === 'raga') {
-    pieceResultsTitle.textContent = `Renditions of Raga ${selected.name}`;
-    pieceResultsSubtitle.textContent = byArtist.trim();
+      [formatPieceMeta(pieceMeta(selected)), byArtist].filter(Boolean).join(' · ');
   } else {
-    pieceResultsTitle.textContent = `Composed by ${selected.name}`;
-    pieceResultsSubtitle.textContent = byArtist.trim();
+    pieceResultsTitle.textContent = type === 'raga'
+      ? `Renditions of Raga ${selected.name}`
+      : `Composed by ${selected.name}`;
+    pieceResultsSubtitle.textContent = byArtist;
   }
 }
 

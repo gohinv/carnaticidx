@@ -170,8 +170,11 @@ function createAutocomplete({ input, list, fetchUrl, fetchItems, renderItem, onS
   let items = [];
   let activeIdx = -1;
   let timer = null;
+  let requestId = 0; // bumped by close() so late responses are discarded
 
   const close = () => {
+    clearTimeout(timer);
+    requestId++;
     list.classList.remove('open');
     list.innerHTML = '';
     items = [];
@@ -199,18 +202,22 @@ function createAutocomplete({ input, list, fetchUrl, fetchItems, renderItem, onS
   };
 
   const query = async (q) => {
+    const id = ++requestId;
     try {
+      let fetched;
       if (fetchItems) {
-        items = await fetchItems(q);
+        fetched = await fetchItems(q);
       } else {
         const res = await fetch(fetchUrl(q));
         if (!res.ok) throw new Error('autocomplete failed');
-        items = await res.json();
+        fetched = await res.json();
       }
+      if (id !== requestId) return;
+      items = fetched;
       if (!Array.isArray(items)) { close(); return; }
       render();
     } catch {
-      close();
+      if (id === requestId) close();
     }
   };
 
