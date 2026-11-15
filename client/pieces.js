@@ -236,30 +236,39 @@ function buildRenditionCard(r, artists = []) {
   const meta = document.createElement('div');
   meta.className = 'rendition-meta';
 
-  if (r.piece_name) {
-    const pieceLine = document.createElement('div');
-    pieceLine.className = 'rendition-piece';
-    pieceLine.textContent = r.piece_meta ? `${r.piece_name} · ${r.piece_meta}` : r.piece_name;
-    meta.appendChild(pieceLine);
-  }
-
-  const title = document.createElement('a');
-  title.className = 'rendition-concert';
-  title.textContent = r.concert_title || 'Untitled Concert';
-  title.href = `#/concert/${r.concert_id}`;
-  meta.appendChild(title);
-
   const details = document.createElement('div');
   details.className = 'rendition-details';
-  if (r.concert_year) {
-    const yr = document.createElement('span');
-    yr.textContent = r.concert_year;
-    details.appendChild(yr);
+
+  if (r.piece_name) {
+    // raga/composer searches: the composition leads, year and artists are secondary
+    li.classList.add('rendition-card-piece');
+
+    const pieceTitle = document.createElement('div');
+    pieceTitle.className = 'rendition-piece-title';
+    pieceTitle.textContent = r.piece_name;
+    meta.appendChild(pieceTitle);
+
+    if (r.piece_meta) {
+      const pieceMetaLine = document.createElement('div');
+      pieceMetaLine.className = 'rendition-piece-meta';
+      pieceMetaLine.textContent = r.piece_meta;
+      meta.appendChild(pieceMetaLine);
+    }
+  } else {
+    // piece-name searches: the piece is already known, so the concert leads
+    const concertLink = document.createElement('a');
+    concertLink.className = 'rendition-concert';
+    concertLink.textContent = r.concert_title || 'Untitled Concert';
+    concertLink.href = `#/concert/${r.concert_id}`;
+    meta.appendChild(concertLink);
   }
-  if (artists.length) {
-    const artistLine = document.createElement('span');
-    artistLine.textContent = formatArtists(artists);
-    details.appendChild(artistLine);
+
+  // artists and year share one line, separated by the same dot as between artists
+  const line = [...artists.map(a => a.name), r.concert_year].filter(Boolean).join(' · ');
+  if (line) {
+    const lineEl = document.createElement('span');
+    lineEl.textContent = line;
+    details.appendChild(lineEl);
   }
   meta.appendChild(details);
 

@@ -145,10 +145,18 @@ main {
   margin-top: 1.25rem;
 }
 
-.rendition-piece {
-  font-size: 0.8rem;
-  color: var(--muted);
-  margin-bottom: 0.15rem;
+.rendition-piece-title {
+  font-size: 1.05rem;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rendition-piece-meta {
+  margin-top: 0.15rem;
+  font-size: 0.82rem;
+  color: var(--accent-dim);
 }
 
 .search-label {
